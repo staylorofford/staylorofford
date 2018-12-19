@@ -3,16 +3,19 @@ import pycurl
 from io import BytesIO
 import math
 import matplotlib.pyplot as plt
+import datetime
 
 quakeml_reader = Unpickler()
 
 def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
-                     minlatitude, maxlatitude, starttime='0000-01-01T00:00:00'):
+                     minlatitude, maxlatitude, starttime = '0000-01-01T00:00:00',
+                     maxmagnitude = 10):
     """
     Use obspy with pycurl to query event catalogs from FDSN members.
 
     :param service:
     :param minmagnitude:
+    :param maxmagnitude:
     :param minlongitude:
     :param maxlongitude:
     :param minlatitude:
@@ -26,30 +29,89 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
     if "usgs" in service:
         maxlongitude += 360
 
-    # Build query
+    # Curl FDSN response and parse quakeml bytes string through obspy
+    # using an interative query approach when a single query fails
 
-    query = ""
-    query = query.join((service, "query?", "minmagnitude=", str(minmagnitude),
-                        "&minlatitude=", str(minlatitude), "&maxlatitude=", str(maxlatitude),
-                        "&minlongitude=", str(minlongitude), "&maxlongitude=", str(maxlongitude),
-                        "&starttime=", starttime))
 
-    # Curl FDSN response
+    factor = 1
+    success = False
+    while success == False:
 
+        successes = 0
+        events = []
+
+        # Build magnitude ranges for query
+
+        magnitude_limits = [minmagnitude]
+        for i in range(1, factor + 1):
+                magnitude_limits.append(magnitude_limits[-1] + (maxmagnitude - minmagnitude) / factor)
+
+        # Run queries
+
+        for i in range(1, len(magnitude_limits)):
+
+            # Build query
+
+            query = ""
+            query = query.join((service, "query?", "minmagnitude=", str(magnitude_limits[i - 1]),
+                                "&maxmagnitude=", str(magnitude_limits[i]),
+                                "&minlatitude=", str(minlatitude), "&maxlatitude=", str(maxlatitude),
+                                "&minlongitude=", str(minlongitude), "&maxlongitude=", str(maxlongitude),
+                                "&starttime=", starttime))
+
+            try:
+
+                print('\nAttempting catalog query for events between M ' + str(magnitude_limits[i - 1]) + ' and ' + str(magnitude_limits[i]))
+                queryresult = curl(query)
+
+                print('Processing query result...')
+                process_start = datetime.datetime.now()
+                catalog = quakeml_reader.loads(queryresult)
+                process_end = datetime.datetime.now()
+                print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
+
+                events.extend(catalog.events)
+                print('Catalog now has ' + str(len(events)) + ' events')
+                successes += 1
+
+            except:
+
+                print('Failed!')
+                process_end = datetime.datetime.now()
+                print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
+                if successes > 0:
+                    print('Assuming query failed because no events exist at high magnitude range')
+                    successes += 1
+                else:
+                    factor += 999 # Only fails for huge datasets, so try minimise the size of the first new query
+                    break
+
+        if successes == len(magnitude_limits) - 1:
+            success = True
+
+    return events
+
+
+def curl(curlstr):
+
+    """
+    Perform curl with curlstr
+    :param curlstr: string to curl
+    :return: curl output
+    """
+
+    print('Querying...')
+    process_start = datetime.datetime.now()
     buffer = BytesIO()
     c = pycurl.Curl()
-    c.setopt(c.URL, query)
+    c.setopt(c.URL, curlstr)
     c.setopt(c.WRITEDATA, buffer)
     c.perform()
     c.close()
-    response = buffer.getvalue()
+    process_end = datetime.datetime.now()
+    print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
 
-    # Parse quakeml bytes string through obspy
-
-    catalog = quakeml_reader.loads(response)
-    print(str(len(catalog)) + ' events were found in the catalog')
-
-    return catalog
+    return buffer.getvalue()
 
 
 def generate_lengths(event, reference_catalog, max_dt, max_dist):
@@ -133,7 +195,7 @@ def to_cartesian(latitude, longitude, depth):
 
 # Set script parameters
 
-minmagnitude = 6  # minimum event magnitude to get from catalog
+minmagnitude = 4 # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -60, -13  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 145, -145  # minimum and maximum longitude for event search window
 
@@ -154,15 +216,19 @@ print('Searching earthquake catalogs for events above magnitude ' + str(minmagni
 service = "https://service.geonet.org.nz/fdsnws/event/1/"
 GeoNet_catalog = FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                                   minlatitude, maxlatitude)
+print('\n' + str(len(GeoNet_catalog)) + ' events were found in the GeoNet catalog')
 
 # Build USGS event catalog
 
 service = "https://earthquake.usgs.gov/fdsnws/event/1/"
 USGS_catalog = FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                                 minlatitude, maxlatitude)
+print('\n' + str(len(USGS_catalog)) + ' events were found in the USGS catalog')
 
 # Match events between catalogs and extract magnitudes
 
+print('\nFinding event matches with desired magnitude types...')
+process_start = datetime.datetime.now()
 dependent_magnitudes, independent_magnitudes = [], []
 for n in range(len(GeoNet_catalog)):
     event = GeoNet_catalog[n]
@@ -176,20 +242,31 @@ for n in range(len(GeoNet_catalog)):
                     if matched_event_magnitude.magnitude_type == indep_mag_type:
                         dependent_magnitudes.append(event_magnitude.mag)
                         independent_magnitudes.append(matched_event_magnitude.mag)
+process_end = datetime.datetime.now()
+print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
 
 # Save data
 
-print(str(len(dependent_magnitudes)) + ' matched magnitudes were found')
+print('\n' + str(len(dependent_magnitudes)) + ' matched events with desired magnitude types were found')
 
+print('\nSaving data to file...')
+process_start = datetime.datetime.now()
 with open('magnitude_matches.csv', 'w') as outfile:
     outfile.write(indep_mag_type + ',' + dep_mag_type + '\n')
 with open('magnitude_matches.csv', 'a') as outfile:
     for n in range(len(dependent_magnitudes)):
         outfile.write(str(independent_magnitudes[n]) + ',' + str(dependent_magnitudes[n]) + '\n')
+process_end = datetime.datetime.now()
+print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
 
 # Plot data
 
-plt.scatter(dependent_magnitudes, independent_magnitudes, s = 0.1)
+print('\nPlotting data...')
+process_start = datetime.datetime.now()
+plt.scatter(dependent_magnitudes, independent_magnitudes, s = 1)
 plt.xlabel(dep_mag_type)
 plt.ylabel(indep_mag_type)
+process_end = datetime.datetime.now()
+print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
 plt.show()
+
