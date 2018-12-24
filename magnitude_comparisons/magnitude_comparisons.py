@@ -202,8 +202,10 @@ minlongitude, maxlongitude = 145, -145  # minimum and maximum longitude for even
 max_dt = 100  # maximum time (s) between events in separate catalogs for them to be considered records of the same earthquake
 max_dist = 1000  # maximum distance (km) "
 
-indep_mag_type = 'mww'  # first magnitude to compare (independent variable)
-dep_mag_type = 'mB'  # second magnitude to compare (dependent variable)
+# Define comparison magnitudes: first nested list is from GeoNet catalog, second if from USGS
+# Code will do all combinations across the two catalogs
+
+comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)', 'M'], ['mw', 'mwc', 'mwb', 'mww']]
 
 # Build event catalogs
 
@@ -225,48 +227,52 @@ USGS_catalog = FDSN_event_query(service, minmagnitude, minlongitude, maxlongitud
                                 minlatitude, maxlatitude)
 print('\n' + str(len(USGS_catalog)) + ' events were found in the USGS catalog')
 
-# Match events between catalogs and extract magnitudes
+# Match events between catalogs and extract magnitudes then save the data
 
-print('\nFinding event matches with desired magnitude types...')
+print('\nFinding event matches between the two catalogs')
+magnitude_types = [[] for i in range(len(comparison_magnitudes[0]) * len(comparison_magnitudes[1]))]
+eventIDs = [[] for i in range(len(comparison_magnitudes[0]) * len(comparison_magnitudes[1]))]
+dependent_magnitudes = [[] for i in range(len(comparison_magnitudes[0]) * len(comparison_magnitudes[1]))]
+independent_magnitudes = [[] for i in range(len(comparison_magnitudes[0]) * len(comparison_magnitudes[1]))]
+length = [[] for i in range(len(comparison_magnitudes[0]) * len(comparison_magnitudes[1]))]
 process_start = datetime.datetime.now()
-dependent_magnitudes, independent_magnitudes = [], []
 for n in range(len(GeoNet_catalog)):
     event = GeoNet_catalog[n]
     lengths = generate_lengths(event, USGS_catalog, max_dt, max_dist)
     print(str(len(lengths[0])) + ' reference events found for the ' + str(n) + 'th event in the catalog')
     if len(lengths[0]) > 0:
         matched_event = USGS_catalog[lengths[1][lengths[0].index(min(lengths[0]))]]
-        for event_magnitude in event.magnitudes:
-            if event_magnitude.magnitude_type == dep_mag_type:
-                for matched_event_magnitude in matched_event.magnitudes:
-                    if matched_event_magnitude.magnitude_type == indep_mag_type:
-                        dependent_magnitudes.append(event_magnitude.mag)
-                        independent_magnitudes.append(matched_event_magnitude.mag)
+        cc = 0 # combination counter
+        for dep_mag_type in comparison_magnitudes[0]:
+            for indep_mag_type in comparison_magnitudes[1]:
+                magnitude_types[cc] = [dep_mag_type, indep_mag_type]
+                print('Finding event matches for magnitude types ' + dep_mag_type + ' and ' + indep_mag_type)
+                for event_magnitude in event.magnitudes:
+                    if event_magnitude.magnitude_type == dep_mag_type:
+                        for matched_event_magnitude in matched_event.magnitudes:
+                            if matched_event_magnitude.magnitude_type == indep_mag_type:
+                                eventIDs[cc].append(str(event.resource_id).split('/')[-1])
+                                dependent_magnitudes[cc].append(event_magnitude.mag)
+                                independent_magnitudes[cc].append(matched_event_magnitude.mag)
+                                length[cc].append(lengths[0][lengths[0].index(min(lengths[0]))])
+                print('    ' + str(len(dependent_magnitudes[cc])) + ' matched events with desired magnitude types were found')
+                cc += 1
+
 process_end = datetime.datetime.now()
 print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
 
 # Save data
 
-print('\n' + str(len(dependent_magnitudes)) + ' matched events with desired magnitude types were found')
 
 print('\nSaving data to file...')
 process_start = datetime.datetime.now()
-with open('magnitude_matches.csv', 'w') as outfile:
-    outfile.write(indep_mag_type + ',' + dep_mag_type + '\n')
-with open('magnitude_matches.csv', 'a') as outfile:
-    for n in range(len(dependent_magnitudes)):
-        outfile.write(str(independent_magnitudes[n]) + ',' + str(dependent_magnitudes[n]) + '\n')
+for i in range(cc):
+    with open(magnitude_types[i][0] + '_' + magnitude_types[i][1] + '_' + 'magnitude_matches.csv', 'w') as outfile:
+        outfile.write('eventID,' + magnitude_types[i][0] + ',' + magnitude_types[i][1] + ',' + 'length' + '\n')
+    with open(magnitude_types[i][0] + '_' + magnitude_types[i][1] + '_' + 'magnitude_matches.csv', 'a') as outfile:
+        for n in range(len(eventIDs[i])):
+            outfile.write(
+                eventIDs[i][n] + ',' + str(dependent_magnitudes[i][n]) + ',' + str(independent_magnitudes[i][n])
+                + ',' + str(length[i][n]) + '\n')
 process_end = datetime.datetime.now()
 print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
-
-# Plot data
-
-print('\nPlotting data...')
-process_start = datetime.datetime.now()
-plt.scatter(dependent_magnitudes, independent_magnitudes, s = 1)
-plt.xlabel(dep_mag_type)
-plt.ylabel(indep_mag_type)
-process_end = datetime.datetime.now()
-print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
-plt.show()
-
