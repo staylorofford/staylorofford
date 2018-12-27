@@ -4,7 +4,7 @@ from io import BytesIO
 import math
 import matplotlib.pyplot as plt
 import datetime
-import pandas as pd
+import glob
 
 quakeml_reader = Unpickler()
 
@@ -62,7 +62,7 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
 
             try:
 
-                print('\nAttempting catalog query for events between M ' + str(magnitude_limits[i - 1]) + ' and ' + str(magnitude_limits[i]))
+                print('\nAttempting FDSN catalog query for events between M ' + str(magnitude_limits[i - 1]) + ' and ' + str(magnitude_limits[i]))
                 queryresult = curl(query)
 
                 print('Processing query result...')
@@ -115,59 +115,6 @@ def curl(curlstr):
     return buffer.getvalue()
 
 
-def generate_lengths(event, reference_catalog, max_dt, max_dist):
-    """
-    :param event: obspy event object
-    :param reference_catalog: list of obspy event objects to calculate lengths to
-    :param max_dt: maximum seconds (absolute) between events for them to be matched
-    :param max_dist: maximum distance (absolute) between events for them to be matched
-    :return: list containing combined temporal and spatial length between the event and
-                all reference events
-    """
-
-    # Initialise list to save lengths in
-
-    lengths = [[], []]
-
-    # Get event position in cartesian coordinates
-
-    ETi, ELa, ELo, EDe = [event.origins[0].time, event.origins[0].latitude,
-                          event.origins[0].longitude, event.origins[0].depth]
-    Ex, Ey, Ez = to_cartesian(ELa, ELo, EDe)
-
-    # Compare event temporal and spatial position to those of reference events
-
-    for n in range(len(reference_catalog)):
-
-        reference_event = reference_catalog[n]
-
-        # Get reference event position in cartesian coordinates
-
-        RETi, RELa, RELo, REDe = [reference_event.origins[0].time, reference_event.origins[0].latitude,
-                                  reference_event.origins[0].longitude, reference_event.origins[0].depth]
-
-        REx, REy, REz = to_cartesian(RELa, RELo, REDe)
-
-        # Calculate temporal length and check temporal matching limit
-
-        temporal_length = abs(ETi - RETi)
-        if temporal_length > max_dt:
-            continue
-
-        # Calculate spatial length and check spatial matching limit
-
-        spatial_length = math.sqrt((Ex - REx) ** 2 + (Ey - REy) ** 2 + (Ez - REz) ** 2) / 1000.0
-        if spatial_length > max_dist:
-            continue
-
-        # Store values
-
-        lengths[0].append(math.sqrt(temporal_length ** 2 + spatial_length ** 2))
-        lengths[1].append(n)
-
-    return lengths
-
-
 def to_cartesian(latitude, longitude, depth):
     """
     Convert a point on the Earth in spherical coordinates to cartesian coordinates
@@ -176,6 +123,12 @@ def to_cartesian(latitude, longitude, depth):
     :param depth: point depth in metres, down is positive
     :return: cartesian coordinates of the point
     """
+
+    # Ensure variables are floats
+
+    latitude = float(latitude)
+    longitude = float(longitude)
+    depth = float(depth)
 
     Re = 6371000  # average Earth radius in m (assuming a spherical Earth)
 
@@ -194,7 +147,7 @@ def to_cartesian(latitude, longitude, depth):
     return x, y, z
 
 
-def match_magnitudes(event_catalog, reference_catalog, comparison_magnitudes, max_dt, max_dist):
+def match_magnitudes(magnitude_timeseries, timeseries_types, comparison_magnitudes, max_dt, max_dist):
 
     """
     Match events between two catalogs and save all matched events with magnitude
@@ -208,55 +161,75 @@ def match_magnitudes(event_catalog, reference_catalog, comparison_magnitudes, ma
     :return: saves matched events with matched magnitudes to a csv file
     """
 
-    print('\nFinding event matches between the two catalogs')
+    datalist = [[[] for i in range(len(timeseries_types))] for j in range(7)]
+    for n in range(len(timeseries_types)):
+        if timeseries_types[n].split('_')[0] == catalog_names[0].split('_')[0] and \
+                timeseries_types[n].split('_')[2] in comparison_magnitudes[0]:
+            for m in range(len(timeseries_types)):
+                if timeseries_types[m].split('_')[0] == catalog_names[1].split('_')[0] and \
+                        timeseries_types[m].split('_')[2] in comparison_magnitudes[1]:
+                    for i in range(len(magnitude_timeseries[0][n])):
+                        lengths = [[], []]
+                        ETi, ELa, ELo, EDe = [datetime.datetime.strptime(magnitude_timeseries[1][n][i], '%Y-%m-%dT%H:%M:%S.%fZ'),
+                                              float(magnitude_timeseries[4][n][i]), float(magnitude_timeseries[5][n][i]),
+                                              float(magnitude_timeseries[6][n][i])]
+                        Ex, Ey, Ez = to_cartesian(ELa, ELo, EDe)
+                        for j in range(len(magnitude_timeseries[0][m])):
+                            RETi, RELa, RELo, REDe = [datetime.datetime.strptime(magnitude_timeseries[1][m][j], '%Y-%m-%dT%H:%M:%S.%fZ'),
+                                              float(magnitude_timeseries[4][m][j]), float(magnitude_timeseries[5][m][j]),
+                                              float(magnitude_timeseries[6][m][j])]
+                            REx, REy, REz = to_cartesian(RELa, RELo, REDe)
 
-    magnitude_types = [[] for i in range(len(comparison_magnitudes[0]) * len(comparison_magnitudes[1]))]
-    datalist = [[[] for i in range(len(comparison_magnitudes[0]) * len(comparison_magnitudes[1]))] for j in range(4)]
+                            temporal_length = abs((ETi - RETi).total_seconds())
 
-    process_start = datetime.datetime.now()
-    for n in range(len(event_catalog)):
-        event = event_catalog[n]
-        lengths = generate_lengths(event, reference_catalog, max_dt, max_dist)
-        print(str(len(lengths[0])) + ' reference events found for the ' + str(n) + 'th event in the catalog')
-        if len(lengths[0]) > 0:
-            matched_event = reference_catalog[lengths[1][lengths[0].index(min(lengths[0]))]]
-            cc = 0  # combination counter
-            for dep_mag_type in comparison_magnitudes[0]:
-                for indep_mag_type in comparison_magnitudes[1]:
-                    magnitude_types[cc] = [dep_mag_type, indep_mag_type]
-                    print('Finding event matches for magnitude types ' + dep_mag_type + ' and ' + indep_mag_type)
-                    for event_magnitude in event.magnitudes:
-                        if event_magnitude.magnitude_type == dep_mag_type:
-                            for matched_event_magnitude in matched_event.magnitudes:
-                                if matched_event_magnitude.magnitude_type == indep_mag_type:
-                                    datalist[0][cc].append(event.resource_id)
-                                    datalist[1][cc].append(event_magnitude.mag)
-                                    datalist[2][cc].append(matched_event_magnitude.mag)
-                                    datalist[3][cc].append(lengths[0][lengths[0].index(min(lengths[0]))])
+                            if temporal_length > max_dt:
+                                continue
+
+                            spatial_length = math.sqrt((Ex - REx) ** 2 + (Ey - REy) ** 2 + (Ez - REz) ** 2) / 1000.0
+                            if spatial_length > max_dist:
+                                continue
+
+                            lengths[0].append(math.sqrt(temporal_length ** 2 + spatial_length ** 2))
+                            lengths[1].append(n)
+
+                        print(str(len(lengths[0])) + ' reference events found for the ' + str(
+                            i) + 'th event in the catalog')
+                        if len(lengths[0]) > 0:
+                            match_idx = lengths[1][lengths[0].index(min(lengths[0]))]
+                            datalist[0][n].append(magnitude_timeseries[0][n][i])
+                            datalist[1][n].append(magnitude_timeseries[3][n][i])
+                            datalist[2][n].append(magnitude_timeseries[3][m][match_idx])
+                            datalist[3][n].append(lengths[0][lengths[0].index(min(lengths[0]))])
+                            datalist[4][n].append(magnitude_timeseries[4][n][i])
+                            datalist[5][n].append(magnitude_timeseries[5][n][i])
+                            datalist[6][n].append(magnitude_timeseries[6][n][i])
+
                     print('    ' + str(
-                        len(datalist[0][cc])) + ' matched events with desired magnitude types were found')
-                    cc += 1
+                        len(datalist[0][n])) + ' matched events with desired magnitude types were found')
 
-    process_end = datetime.datetime.now()
-    print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
+                    # Save data
 
-    # Save data
+                    print('\nSaving data to file...')
+                    if len(datalist[0][n]) == 0:
+                        continue
+                    else:
+                        with open(timeseries_types[n].split('_')[2] + '_' + timeseries_types[m].split('_')[
+                            2] + '_' + 'magnitude_matches.csv', 'w') as outfile:
+                            outfile.write(
+                                'eventID,' + timeseries_types[n].split('_')[2] + ',' + timeseries_types[m].split('_')[
+                                    2] + ',' +
+                                'length,longitude,latitude,depth' + '\n')
+                        with open(timeseries_types[n].split('_')[2] + '_' + timeseries_types[m].split('_')[
+                            2] + '_' + 'magnitude_matches.csv', 'a') as outfile:
+                            for i in range(len(datalist[0][n])):
+                                outfile.write(
+                                    str(datalist[0][n][i]) + ',' + str(datalist[1][n][i]) + ',' + str(datalist[2][n][i])
+                                    + ',' + str(datalist[3][n][i]) + ',' + str(datalist[4][n][i]) + ',' + str(
+                                        datalist[5][n][i])
+                                    + ',' + str(datalist[6][n][i]))
 
-    print('\nSaving data to file...')
-    process_start = datetime.datetime.now()
-    for i in range(cc):
-        with open(magnitude_types[i][0] + '_' + magnitude_types[i][1] + '_' + 'magnitude_matches.csv', 'w') as outfile:
-            outfile.write('eventID,' + magnitude_types[i][0] + ',' + magnitude_types[i][1] + ',' + 'length' + '\n')
-        with open(magnitude_types[i][0] + '_' + magnitude_types[i][1] + '_' + 'magnitude_matches.csv', 'a') as outfile:
-            for n in range(len(datalist[0][i])):
-                outfile.write(
-                    str(datalist[0][i][n]) + ',' + str(datalist[1][i][n]) + ',' + str(datalist[2][i][n])
-                    + ',' + str(datalist[3][i][n]) + '\n')
-    process_end = datetime.datetime.now()
-    print('That took ' + str((process_end - process_start).total_seconds()) + ' seconds')
 
-
-def magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes):
+def build_magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes):
 
     """
     Saves magnitude timeseries to disk for each magnitude type in the comparison_magnitudes
@@ -270,7 +243,7 @@ def magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes):
 
     print('\nBuilding magnitude timeseries')
     for i in range(len(catalogs)):
-        datalist = [[[] for j in range(len(comparison_magnitudes[i]))] for k in range(4)]
+        datalist = [[[] for j in range(len(comparison_magnitudes[i]))] for k in range(7)]
         for j in range(len(comparison_magnitudes[i])):
             for event in catalogs[i]:
                 for magnitude in event.magnitudes:
@@ -279,24 +252,158 @@ def magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes):
                         datalist[1][j].append(event.origins[0].time)
                         datalist[2][j].append(magnitude.magnitude_type)
                         datalist[3][j].append(magnitude.mag)
+                        datalist[4][j].append(event.origins[0].latitude)
+                        datalist[5][j].append(event.origins[0].longitude)
+                        datalist[6][j].append(event.origins[0].depth)
 
-            print('Saving data to file for catalog ' + str(catalog_names[i]) + ' for magnitude type ' +
-                  str(comparison_magnitudes[i][j]) + '...')
+            if len(datalist[0][j]) == 0:
+                continue
+            else:
+                print('Saving data to file for catalog ' + str(catalog_names[i]) + ' for magnitude type ' +
+                      str(comparison_magnitudes[i][j]) + '...')
 
-            with open(catalog_names[i] + '_' + comparison_magnitudes[i][j] + '_timeseries.csv', 'w') as outfile:
-                outfile.write('eventID,' + 'origin_time' + ',' + 'magnitude_type' + ',' + 'magnitude' + '\n')
-            with open(catalog_names[i] + '_' + comparison_magnitudes[i][j] + '_timeseries.csv', 'a') as outfile:
-                for n in range(len(datalist[0][j])):
-                    outfile.write(
-                        str(datalist[0][j][n]) + ',' + str(datalist[1][j][n]) + ',' + datalist[2][j][n]
-                        + ',' + str(datalist[3][j][n]) + '\n')
+                with open(catalog_names[i] + '_' + comparison_magnitudes[i][j] + '_timeseries.csv', 'w') as outfile:
+                    outfile.write('eventID,origin_time,magnitude_type,magnitude,latitude,longitude,depth\n')
+                with open(catalog_names[i] + '_' + comparison_magnitudes[i][j] + '_timeseries.csv', 'a') as outfile:
+                    for n in range(len(datalist[0][j])):
+                        outfile.write(
+                            str(datalist[0][j][n]) + ',' + str(datalist[1][j][n]) + ',' + datalist[2][j][n]
+                            + ',' + str(datalist[3][j][n]) + ',' + str(datalist[4][j][n]) + ',' + str(datalist[5][j][n])
+                            + ',' + str(datalist[6][j][n]) + '\n')
+
+
+def GeoNet_Mw(minmagnitude, starttime):
+
+    """
+    Query GeoNet Mw catalog from GitHub
+    :param minmagnitude:
+    :param starttime:
+    :return: saves to file datalist in the same format as generate_timeseries function
+    """
+
+    print('\nBuilding GeoNet Mw timeseries')
+
+    URL = "https://raw.githubusercontent.com/GeoNet/data/master/moment-tensor/GeoNet_CMT_solutions.csv"
+    result = curl(URL).decode('ascii')
+
+    datalist = [[] for i in range(7)]
+    rc = 0
+    for row in result.split('\n'):
+        if rc == 0:
+            rc += 1
+            continue
+        else:
+            rowsplit = row.split(',')
+            if len(rowsplit) < 2:
+                continue
+            else:
+                time = rowsplit[1]
+                if ((datetime.datetime.strptime(time, '%Y%m%d%H%M%S') >= datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%S'))
+                        and (float(rowsplit[11]) >= minmagnitude)):
+
+
+                    datalist[0].append('smi:nz.org.geonet/' + rowsplit[0])
+                    datalist[1].append(time[0:4] + '-' + time[4:6] + '-' + time[6:8] + 'T' + time[8:10] + ':' +
+                                       time[10:12] + ':' + time[12:14] + '.000000Z')
+                    datalist[2].append('Mw')
+                    datalist[3].append(rowsplit[11])
+                    datalist[4].append(rowsplit[2])
+                    datalist[5].append(rowsplit[3])
+                    datalist[6].append(rowsplit[13] + '000')
+
+    if len(datalist[0]) == 0:
+        return
+    else:
+        with open('GeoNet_catalog_Mw_timeseries.csv', 'w') as outfile:
+            outfile.write('eventID,origin_time,magnitude_type,magnitude,latitude,longitude,depth\n')
+        with open('GeoNet_catalog_Mw_timeseries.csv', 'a') as outfile:
+            for n in range(len(datalist[0])):
+                outfile.write(
+                    str(datalist[0][n]) + ',' + str(datalist[1][n]) + ',' + datalist[2][n]
+                    + ',' + str(datalist[3][n]) + ',' + str(datalist[4][n]) + ',' + str(datalist[5][n])
+                    + ',' + str(datalist[6][n]) + '\n')
+
+
+def parse_data(filelist, split_str):
+
+    """
+    Parse magnitude timeseries or matches from csv file
+    :param filelist: list of files
+    :param split_str: string to split filename by to get file type
+    :return: list of data in file, list of type of data in files
+    """
+
+    data_types = []
+    datalist = [[[] for j in range(len(filelist))] for i in range(7)]
+    for j in range(len(filelist)):
+        file = filelist[j]
+        with open(file, 'r') as infile:
+            rc = 0
+            for row in infile:
+                if rc == 0:
+                    rc += 1
+                    continue
+                else:
+                    rowsplit = row.split(',')
+                    for i in range(len(rowsplit)):
+                        datalist[i][j].append(str(rowsplit[i]))
+            if len(datalist[0][j]) > 0:
+                data_types.append(file.split('/')[-1].split(split_str)[0])
+
+    return datalist, data_types
+
+def cumulative_sum(times):
+
+    """
+    Generate a cumulative sum timeseries for event times in times
+    :param times: list of ISO8601 format times (strings)
+    :return: list of event times (datetime objects), cumulative sum at each event time (list of int)
+    """
+
+    cumulative_event_sum = 0
+    cumulative_event_sums = []
+    event_times = []
+
+    # Generate cumulative sum list
+    # and list of event times
+
+    times.sort()
+    for time in times:
+
+        cumulative_event_sum += 1
+        cumulative_event_sums.append(cumulative_event_sum)
+
+        event_time = datetime.datetime.strptime(time, '%Y-%m-%dT%H:%M:%S.%fZ')
+        event_times.append(event_time)
+
+    return event_times, cumulative_event_sums
+
+
+def plot_timeseries(magnitude_timeseries, timeseries_types):
+
+    """
+    Plot cumulative sum timeseries for magnitude types in magnitude_timeseries
+    :param magnitude_timeseries:
+    :param timeseries_types:
+    :return: a single plot containing cumulative sum timeseries of all magnitude types
+    """
+
+    for n in range(len(magnitude_timeseries[0])):
+        event_times, cumulative_event_sums = cumulative_sum(magnitude_timeseries[1][n])
+        plt.scatter(event_times, cumulative_event_sums, label=timeseries_types[n])
+
+    plt.ylabel('cumulative number of events')
+    plt.xlabel('time')
+    plt.legend()
+    plt.show()
 
 
 # Set script parameters
 
-minmagnitude = 3     # minimum event magnitude to get from catalog
-minlatitude, maxlatitude = -90, 90  # minimum and maximum latitude for event search window
-minlongitude, maxlongitude = 0, -180  # minimum and maximum longitude for event search window
+minmagnitude = 5     # minimum event magnitude to get from catalog
+minlatitude, maxlatitude = -60, -13  # minimum and maximum latitude for event search window
+minlongitude, maxlongitude = 145, -145  # minimum and maximum longitude for event search window
+starttime = '2012-01-01T00:00:00' #event query starttime
 
 max_dt = 100  # maximum time (s) between events in separate catalogs for them to be considered records of the same earthquake
 max_dist = 1000  # maximum distance (km) "
@@ -310,24 +417,96 @@ catalogs = [[] for i in range(len(catalog_names))]
 # Define comparison magnitudes: first nested list is from GeoNet catalog, second if from USGS
 # Code will do all combinations across the two catalogs
 
-comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)', 'Mw', 'M', 'ML'], ['mw', 'mwc', 'mwb', 'mww', 'mB']]
+comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)', 'M', 'Mw'], ['mww']]
 
-# Build event catalogs
+# # Build event catalogs from FDSN
+#
+# print('\nSearching earthquake catalogs for events above magnitude ' + str(minmagnitude) +
+#       ' between ' + str(minlatitude) + ' and ' + str(maxlatitude) + ' degrees latitude and ' +
+#       str(minlongitude) + ' and ' + str(maxlongitude) + ' degrees longitude after ' + starttime)
+#
+# for n in range(len(catalogs)):
+#
+#     catalogs[n] = FDSN_event_query(services[n], minmagnitude, minlongitude, maxlongitude,
+#                                   minlatitude, maxlatitude, starttime)
+#     print('\n' + str(len(catalogs[n])) + ' events were found in catalog ' + str(n + 1))
+#
+# # Create a timeseries of use of each magnitude type in comparison_magnitudes for each catalog
+#
+# build_magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes)
+#
+# # Create GeoNet Mw timeseries from GitHub, if desired
+#
+# try:
+#     if 'Mw' in comparison_magnitudes[catalog_names.index('GeoNet_catalog')]:
+#         GeoNet_Mw(minmagnitude, starttime)
+# except:
+#     pass
 
-print('Searching earthquake catalogs for events above magnitude ' + str(minmagnitude) +
-      ' between ' + str(minlatitude) + ' and ' + str(maxlatitude) + ' degrees latitude and ' +
-      str(minlongitude) + ' and ' + str(maxlongitude) + ' degrees longitude')
+# Load timeseries data from files and do event matching
 
-for n in range(len(catalogs)):
+magnitude_timeseries_files = glob.glob('/home/samto/*timeseries.csv')
+magnitude_timeseries, timeseries_types = parse_data(magnitude_timeseries_files, '_timeseries')
 
-    catalogs[n] = FDSN_event_query(services[n], minmagnitude, minlongitude, maxlongitude,
-                                  minlatitude, maxlatitude)
-    print('\n' + str(len(catalogs[n])) + ' events were found in catalog ' + str(n + 1))
+# match_magnitudes(magnitude_timeseries, timeseries_types, comparison_magnitudes, max_dt, max_dist)
 
-# Create a timeseries of use of each magnitude type in comparison_magnitudes for each catalog
+magnitude_match_files = glob.glob('/home/samto/*matches.csv')
+magnitude_matches, match_types = parse_data(magnitude_match_files, '_magnitude')
 
-magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes)
+# # Sort data by alphabetic magnitude type
+#
+# for n in range(len(magnitude_timeseries)):
+#     _, magnitude_timeseries[n] = zip(*sorted(zip(timeseries_types, magnitude_timeseries[n])))
+# timeseries_types.sort()
+#
+# # Generate cumulative sum timeseries for each magnitude and plot it
+#
+# plot_timeseries(magnitude_timeseries, timeseries_types)
 
-# Match events between catalogs and extract magnitudes then save the data
+# Create matches between catalogs: get all possible magnitudes
 
-match_magnitudes(catalogs[0], catalogs[1], comparison_magnitudes, max_dt, max_dist)
+datalist = [[] for i in range(5 + len(timeseries_types))]
+columns = ['eventID', 'length', 'latitude', 'longitude', 'depth']
+for magnitude_type in timeseries_types:
+    columns.append(magnitude_type.split('_')[-1])
+
+# Generate list of events with magnitude matches
+
+event_list = []
+for n in range(len(magnitude_matches[0])):
+    for m in range(len(magnitude_matches[0][n])):
+        event_list.append(magnitude_matches[0][n][m])
+event_list = list(set(event_list))
+
+# Populate datalist
+
+datalist = [[[] for m in range(len(event_list))] for n in range(len(columns))]
+for n in range(len(magnitude_matches)):
+    for m in range(len(magnitude_matches[n])):
+        column_idices = [0, columns.index(match_types[m].split('_')[0]), columns.index(match_types[m].split('_')[1]), 1, 2, 3, 4]
+        for k in range(len(magnitude_matches[n][m])):
+            event_index = event_list.index(magnitude_matches[0][m][k])
+            if n == len(magnitude_matches) - 1:
+                datalist[column_idices[n]][event_index] = str(float(magnitude_matches[n][m][k]))
+            else:
+                datalist[column_idices[n]][event_index] = magnitude_matches[n][m][k]
+
+# Write datalist to file
+
+with open('magnitude_matches_all.csv', 'w') as outfile:
+    header = ""
+    for column in columns:
+        header += column + ','
+    header = header[:-1]
+    outfile.write(header + '\n')
+
+with open('magnitude_matches_all.csv', 'a') as outfile:
+    for m in range(len(datalist[0])):
+        outstr = ""
+        for n in range(len(datalist)):
+            try:
+                outstr += datalist[n][m] + ','
+            except:
+                outstr += "nan,"
+        outfile.write(outstr[:-1] + '\n')
+
