@@ -285,6 +285,7 @@ def GeoNet_Mw(minmagnitude, starttime):
 
     URL = "https://raw.githubusercontent.com/GeoNet/data/master/moment-tensor/GeoNet_CMT_solutions.csv"
     result = curl(URL).decode('ascii')
+    print("")
 
     datalist = [[] for i in range(7)]
     rc = 0
@@ -309,7 +310,7 @@ def GeoNet_Mw(minmagnitude, starttime):
                     datalist[3].append(rowsplit[11])
                     datalist[4].append(rowsplit[2])
                     datalist[5].append(rowsplit[3])
-                    datalist[6].append(rowsplit[13] + '000')
+                    datalist[6].append(rowsplit[13] + '000.0')
 
     if len(datalist[0]) == 0:
         return
@@ -400,7 +401,7 @@ def plot_timeseries(magnitude_timeseries, timeseries_types):
 
 # Set script parameters
 
-minmagnitude = 5     # minimum event magnitude to get from catalog
+minmagnitude = 3.5     # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -60, -13  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 145, -145  # minimum and maximum longitude for event search window
 starttime = '2012-01-01T00:00:00' #event query starttime
@@ -419,36 +420,38 @@ catalogs = [[] for i in range(len(catalog_names))]
 
 comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)', 'M', 'Mw'], ['mww']]
 
-# # Build event catalogs from FDSN
-#
-# print('\nSearching earthquake catalogs for events above magnitude ' + str(minmagnitude) +
-#       ' between ' + str(minlatitude) + ' and ' + str(maxlatitude) + ' degrees latitude and ' +
-#       str(minlongitude) + ' and ' + str(maxlongitude) + ' degrees longitude after ' + starttime)
-#
-# for n in range(len(catalogs)):
-#
-#     catalogs[n] = FDSN_event_query(services[n], minmagnitude, minlongitude, maxlongitude,
-#                                   minlatitude, maxlatitude, starttime)
-#     print('\n' + str(len(catalogs[n])) + ' events were found in catalog ' + str(n + 1))
-#
-# # Create a timeseries of use of each magnitude type in comparison_magnitudes for each catalog
-#
-# build_magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes)
-#
-# # Create GeoNet Mw timeseries from GitHub, if desired
-#
-# try:
-#     if 'Mw' in comparison_magnitudes[catalog_names.index('GeoNet_catalog')]:
-#         GeoNet_Mw(minmagnitude, starttime)
-# except:
-#     pass
+# Build event catalogs from FDSN
+
+print('\nSearching earthquake catalogs for events above magnitude ' + str(minmagnitude) +
+      ' between ' + str(minlatitude) + ' and ' + str(maxlatitude) + ' degrees latitude and ' +
+      str(minlongitude) + ' and ' + str(maxlongitude) + ' degrees longitude after ' + starttime)
+
+for n in range(len(catalogs)):
+
+    catalogs[n] = FDSN_event_query(services[n], minmagnitude, minlongitude, maxlongitude,
+                                  minlatitude, maxlatitude, starttime)
+    print('\n' + str(len(catalogs[n])) + ' events were found in catalog ' + str(n + 1))
+
+# Create a timeseries of use of each magnitude type in comparison_magnitudes for each catalog
+
+build_magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes)
+
+# Create GeoNet Mw timeseries from GitHub, if desired
+
+try:
+    if 'Mw' in comparison_magnitudes[catalog_names.index('GeoNet_catalog')]:
+        GeoNet_Mw(minmagnitude, starttime)
+except:
+    pass
 
 # Load timeseries data from files and do event matching
 
 magnitude_timeseries_files = glob.glob('/home/samto/*timeseries.csv')
 magnitude_timeseries, timeseries_types = parse_data(magnitude_timeseries_files, '_timeseries')
 
-# match_magnitudes(magnitude_timeseries, timeseries_types, comparison_magnitudes, max_dt, max_dist)
+print("Matching events within temporal and spatial distance limits and with the desired magnitude types")
+
+match_magnitudes(magnitude_timeseries, timeseries_types, comparison_magnitudes, max_dt, max_dist)
 
 magnitude_match_files = glob.glob('/home/samto/*matches.csv')
 magnitude_matches, match_types = parse_data(magnitude_match_files, '_magnitude')
@@ -499,7 +502,6 @@ with open('magnitude_matches_all.csv', 'w') as outfile:
         header += column + ','
     header = header[:-1]
     outfile.write(header + '\n')
-
 with open('magnitude_matches_all.csv', 'a') as outfile:
     for m in range(len(datalist[0])):
         outstr = ""
@@ -509,4 +511,3 @@ with open('magnitude_matches_all.csv', 'a') as outfile:
             except:
                 outstr += "nan,"
         outfile.write(outstr[:-1] + '\n')
-
