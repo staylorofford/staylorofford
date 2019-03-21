@@ -10,7 +10,7 @@ import datetime
 import glob
 import math
 
-def parse_path(path_file):
+def parse_path(path_file, path_columns):
 
     """
     :param path_file: path to path file
@@ -43,24 +43,17 @@ def distance(p1, p2):
 
     """
 
-    Calculate the distance between two points on a sphere, assuming no elevation difference exists between the points.
+    Calculate the distance between two points in 2D space, assuming no elevation difference exists between the points.
 
-    :param p1: point 1 horizontal position [lon, lat]
-    :param p2: point 2 horizontal position [lon, lat]
+    :param p1: point 1 horizontal position [X, Y]
+    :param p2: point 2 horizontal position [X, Y]
     :return: distance between p1 and p2
     """
 
-    # Convert longitude and latitude to radians
-
-    for n in range(len(p1)):
-        p1[n] = math.radians(p1[n])
-        p2[n] = math.radians(p2[n])
-
     # Calculate distance
 
-    r = 6371000
-    d = 2 * r * math.asin(math.sqrt((math.sin((p2[1] - p1[1]) / 2.0)) ** 2 + math.cos(p1[0]) * math.cos(p2[0]) *
-                          (math.sin((p2[0] - p1[0]) / 2.0) ** 2)))
+    d = math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+
     return d
 
 
@@ -127,9 +120,9 @@ if __name__ == "__main__":
 
     # Parse path point locations from path file
 
-    path_columns = ['lon', 'lat', 'elevation']
-    northgoing_path_points = parse_path(northgoing_path_file)
-    southgoing_path_points = parse_path(southgoing_path_file)
+    path_columns = ['X', 'Y', 'Z']
+    northgoing_path_points = parse_path(northgoing_path_file, path_columns)
+    southgoing_path_points = parse_path(southgoing_path_file, path_columns)
     point_lists = [northgoing_path_points, southgoing_path_points]
 
     # Calculate distance lists for each path
@@ -144,11 +137,8 @@ if __name__ == "__main__":
             c = 0
             m = n
             while m >= 1:
-                incremental_distance = -1 * distance([point_list[0][m], point_list[1][m]],
-                                                 [point_list[0][m - 1], point_list[1][m - 1]])
-
-                if int(abs(incremental_distance)) > 5:  # Ignore points out of path order
-                    continue
+                incremental_distances.append(-1 * distance([point_list[0][m], point_list[1][m]],
+                                                           [point_list[0][m - 1], point_list[1][m - 1]]))
 
                 c += 1
                 m = n - c
@@ -156,11 +146,8 @@ if __name__ == "__main__":
             c = 0
             m = n
             while m < len(point_list[0]) - 1:
-                incremental_distance = distance([point_list[0][m], point_list[1][m]],
-                                                     [point_list[0][m + 1], point_list[1][m + 1]])
-
-                if int(abs(incremental_distance)) > 5:  # Ignore points out of path order
-                    continue
+                incremental_distances.append(distance([point_list[0][m], point_list[1][m]],
+                                                      [point_list[0][m + 1], point_list[1][m + 1]]))
 
                 c += 1
                 m = n + c
@@ -173,9 +160,10 @@ if __name__ == "__main__":
 
     # Parse time series data in files
 
-    data_columns = ['time', 'lat', 'lon', 'elevation', 'accuracy']
-    northgoing_data_lists = [[], [], [], [], []]
-    southgoing_data_lists = [[], [], [], [], []]
+    data_columns = ['time', 'X', 'Y', 'accuracy']
+    dc_idx = [3, 0, 1, 7]  # indices of data columns in data files
+    northgoing_data_lists = [[] for i in range(len(data_columns))]
+    southgoing_data_lists = [[] for i in range(len(data_columns))]
     data_lists = [northgoing_data_lists, southgoing_data_lists]
 
     if not threshold:  # If no threshold is given, set to default 10 m
@@ -200,35 +188,56 @@ if __name__ == "__main__":
 
                 cols = row.split(',')
 
-                if float(cols[4]) > threshold:  # Determine if the point's accuracy is sufficient
+                # Determine if the point's accuracy is sufficient
+
+                if float(cols[dc_idx[data_columns.index('accuracy')]].replace("\"", "")) > threshold:
                     continue
 
-                if cols[0][:10].replace('-', '') == start_date:  # Determine if data point is north- or south-going
+                # Determine if data point is north- or south-going
+
+                if cols[dc_idx[data_columns.index('time')]][:10].replace('-', '') == start_date:
                     m = 0
                 else:
                     m = 1
 
                 for n in range(len(data_columns)):
                     try:
-                        data_lists[m][n].append(datetime.datetime.strptime(cols[n][:19], '%Y-%m-%dT%H:%M:%S'))
+                        data_lists[m][n].append(datetime.datetime.strptime(cols[dc_idx[n]][:19], '%Y-%m-%dT%H:%M:%S'))
                     except:
-                        data_lists[m][n].append(float(cols[n]))
+                        data_lists[m][n].append(float(cols[dc_idx[n]].replace("\"", "")))
 
     # Calculate distances of each data point along the path
 
     for m in range(len(data_lists)):
         for n in range(len(data_lists[m][0])):
-            data_point = [data_lists[m][2][n], data_lists[m][1][n]]
-            for k in range(len(point_lists[m][0])):  # Find the vertex which sits behind the data point
-                vertex_point = [point_lists[m][0][k], point_lists[m][1][k]]
-                if distance(vertex_point, data_point) < 0:
+            distance_sums = [99999]
+            data_point = [data_lists[m][1][n], data_lists[m][2][n]]
+            for k in range(1, len(point_lists[m][0])):  # Find the vertices that surround the data point
+                vertex_points = [[point_lists[m][0][k - 1], point_lists[m][1][k - 1]],
+                                 [point_lists[m][0][k], point_lists[m][1][k]]]
+                distance_sum = 0
+                for vertex_point in vertex_points:
+                    distance_sum += distance(data_point, vertex_point)
+
+                if distance_sum > distance_sums[-1]:  # Gone too far
                     break
-                # Transform vertex, next vertex, and data point into cartesian coordinates so dot and cross
-                # products can be used to calculate distances along and off the line between vertices
+                else:
+                    distance_sums.append(distance_sum)
 
-                # something... something...
+            direction_vector = [vertex_points[1][0] - vertex_points[0][0],
+                                vertex_points[1][1] - vertex_points[0][1],
+                                0]
+            relative_data_point = [data_point[0] - vertex_points[0][0],
+                                   data_point[1] - vertex_points[0][1],
+                                   0]
+            print(direction_vector, relative_data_point)
+            try:
+                distance_on_line = dot_product(direction_vector, relative_data_point) / normalise(direction_vector)[1]
 
-                # on_line_distance = dot_product(direction_vector, data_point) / direction_vector_magnitude
-                # event_line_cross_product = cross_product(direction_vector, data_point)
-                # off_line_distance = (event_line_cross_product[2] / abs(event_line_cross_product[2])) * \
-                #                     normalise(event_line_cross_product)[1] / direction_vector_magnitude
+                event_line_cross_product = cross_product(direction_vector, relative_data_point)
+                distance_from_line = ((event_line_cross_product[2] / abs(event_line_cross_product[2])) * \
+                                      normalise(event_line_cross_product)[1] / normalise(direction_vector)[1])
+
+                print(distance_on_line, distance_from_line)
+            except:  # Fails if direction vector has length 0
+                pass
