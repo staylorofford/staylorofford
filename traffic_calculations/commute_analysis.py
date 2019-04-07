@@ -10,33 +10,12 @@ import datetime
 import glob
 import math
 
-def parse_path(path_file, path_columns):
-
-    """
-    :param path_file: path to path file
-    :return: list of path point locations
-    """
+def parse_sorted_path(sorted_path_file):
 
     path_points = [[], [], []]
-    with open(path_file, 'r') as openfile:
-        header = '0'
-        for row in openfile:
+    distances = []
 
-            # Ignore csv header
-
-            try:
-                header += 1
-            except:
-                header = int(header)
-                continue
-
-            # Extract data into lists
-
-            cols = row.split(',')
-            for n in range(len(path_columns)):
-                path_points[n].append(float(cols[n]))
-
-    return path_points
+    return path_points, distances
 
 
 def distance(p1, p2):
@@ -99,64 +78,32 @@ def normalise(a):
 
     return a_norm, a_mag
 
-
-
 if __name__ == "__main__":
 
     # Parse arguments
 
     parser = argparse.ArgumentParser(description='What does this script do?')
+    parser.add_argument('sorted_northgoing_path_csv', type=str, help="Path to csv file containing sorted"
+                                                                     " northgoing path points")
+    parser.add_argument('sorted_southgoing_path_csv', type=str, help="Path to csv file containing sorted"
+                                                                     "southgoing path points")
     parser.add_argument('file_directory', type=str, help="Path to directory containing time series csv files")
-    parser.add_argument('northgoing_path_csv', type=str, help="Path to csv file containing northgoing path points")
-    parser.add_argument('southgoing_path_csv', type=str, help="Path to csv file containing southgoing path points")
     parser.add_argument('--threshold', type=str, help="Optional: location accuracy value above which to discard data " +
-                                                    "points. Default = 10 m")
+                                                      "points. Default = 10 m")
     args = parser.parse_args()
 
-    file_dir = args.file_directory
     northgoing_path_file = args.northgoing_path_csv
-    southgoing_path_file = args.southgoing_path_csv
+    southgoing_path_file = args.northgoing_path_csv
+    file_dir = args.file_directory
     threshold = args.threshold
 
-    # Parse path point locations from path file
+    # Parse commute point lists
 
-    path_columns = ['X', 'Y', 'Z']
-    northgoing_path_points = parse_path(northgoing_path_file, path_columns)
-    southgoing_path_points = parse_path(southgoing_path_file, path_columns)
-    point_lists = [northgoing_path_points, southgoing_path_points]
+    northgoing_point_list, northgoing_distance = parse_sorted_path(northgoing_path_file)
+    southgoing_point_list, southgoing_distance = parse_sorted_path(southgoing_path_file)
 
-    # Calculate distance lists for each path
-
-    distance_lists = []
-    for point_list in point_lists:
-        incremental_distance_sums = []
-        incremental_distance_lists = []
-        for n in range(len(point_list[0])):
-            incremental_distances = [0]
-
-            c = 0
-            m = n
-            while m >= 1:
-                incremental_distances.append(-1 * distance([point_list[0][m], point_list[1][m]],
-                                                           [point_list[0][m - 1], point_list[1][m - 1]]))
-
-                c += 1
-                m = n - c
-
-            c = 0
-            m = n
-            while m < len(point_list[0]) - 1:
-                incremental_distances.append(distance([point_list[0][m], point_list[1][m]],
-                                                      [point_list[0][m + 1], point_list[1][m + 1]]))
-
-                c += 1
-                m = n + c
-
-            incremental_distance_sums.append(sum(incremental_distances))
-            incremental_distance_lists.append(incremental_distances)
-
-        distance_lists.append(incremental_distance_lists[incremental_distance_sums.
-                              index(max(incremental_distance_sums))])
+    point_lists = [northgoing_point_list, southgoing_point_list]
+    distance_lists = [northgoing_distance, southgoing_distance]
 
     # Parse time series data in files
 
@@ -208,21 +155,30 @@ if __name__ == "__main__":
 
     # Calculate distances of each data point along the path
 
-    for m in range(len(data_lists)):
+    for m in range(len(data_lists)):  # NOTE: all data is under data_lists[1] due to some error above
+        # print(m)
         for n in range(len(data_lists[m][0])):
-            distance_sums = [99999]
+            # print(n)
+            distance_sums = [999999999]
             data_point = [data_lists[m][1][n], data_lists[m][2][n]]
             for k in range(1, len(point_lists[m][0])):  # Find the vertices that surround the data point
                 vertex_points = [[point_lists[m][0][k - 1], point_lists[m][1][k - 1]],
                                  [point_lists[m][0][k], point_lists[m][1][k]]]
                 distance_sum = 0
+                print(vertex_points)
                 for vertex_point in vertex_points:
                     distance_sum += distance(data_point, vertex_point)
 
-                if distance_sum > distance_sums[-1]:  # Gone too far
+                # print(distance_sum)
+                if distance_sum > distance_sums[-1]:
+                    # At the set of vertices just beyond those containing the data point
+                    # print('BREAK')
                     break
                 else:
                     distance_sums.append(distance_sum)
+
+            # For loop breaks at vertices surrounding data point, translate vertices
+            # and data point into vectors relative to the "behind" vertex
 
             direction_vector = [vertex_points[1][0] - vertex_points[0][0],
                                 vertex_points[1][1] - vertex_points[0][1],
@@ -234,10 +190,10 @@ if __name__ == "__main__":
             try:
                 distance_on_line = dot_product(direction_vector, relative_data_point) / normalise(direction_vector)[1]
 
-                event_line_cross_product = cross_product(direction_vector, relative_data_point)
-                distance_from_line = ((event_line_cross_product[2] / abs(event_line_cross_product[2])) * \
-                                      normalise(event_line_cross_product)[1] / normalise(direction_vector)[1])
+                data_vertex_cross_product = cross_product(direction_vector, relative_data_point)
+                distance_from_line = ((data_vertex_cross_product[2] / abs(data_vertex_cross_product[2])) * \
+                                      normalise(data_vertex_cross_product)[1] / normalise(direction_vector)[1])
 
-                print(distance_on_line, distance_from_line)
+                # print(distance_on_line, distance_from_line)
             except:  # Fails if direction vector has length 0
                 pass
