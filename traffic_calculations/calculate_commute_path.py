@@ -87,20 +87,20 @@ if __name__ == "__main__":
 
     # Order vertices into a commute path
 
-    end_points = []
-    end_point_indices = []
+    all_end_points = []
+    all_end_point_indices = []
     for m in range(len(vertex_lists)):
 
         # Find line segment end points for the path
         for n in range(len(vertex_lists[m])):
             for k in range(len(vertex_lists[m])):
                 if n != k and distance(vertex_lists[m][n], vertex_lists[m][k]) == 0:
-                    end_points.append(vertex_lists[m][n][:-1])
-                    end_point_indices.append(n)
+                    all_end_points.append(vertex_lists[m][n][:-1])
+                    all_end_point_indices.append(n)
 
         # Find along-line direction of indices for first line segment on path
 
-        initial_idx = end_point_indices[0]
+        initial_idx = all_end_point_indices[0]
         path_points = [vertex_lists[m][initial_idx]]
         if vertex_lists[m][initial_idx + 1][3] == vertex_lists[m][initial_idx][3]:
             sign = 1
@@ -110,44 +110,106 @@ if __name__ == "__main__":
         # Build the path in the direction of the first line segment
 
         idx = initial_idx
-        while idx != 0 or idx != len(vertex_lists[m]):
+        end_points = all_end_points
+        end_point_indices = all_end_point_indices
+        c = 0
+        # ISSUE! Somehow counts more points than are in the data! Can't see if ordering if working due to
+        # duplicates!
+        while True:
             idx += sign
             if vertex_lists[m][idx][:-1] in end_points:
                 # Jump to the end point of the new line
-                # ISSUE: poping seems to be removing required values to have this indexing method work!
-                print(idx)
+                print(vertex_lists[m][idx][:-1])
+                print('index is ' + str(idx))
+
+                # Remove the end point from the reference lists
+
                 end_points.pop(end_point_indices.index(idx))
                 end_point_indices.pop(end_point_indices.index(idx))
-                print(end_points.index(vertex_lists[m][idx][:-1]))
-                idx = end_points.index(vertex_lists[m][idx][:-1])
+
+                # Find the index of the associated end point in the data
+
+                print('end points index is ' + str(end_points.index(vertex_lists[m][idx][:-1])))
+                idx = end_point_indices[end_points.index(vertex_lists[m][idx][:-1])]
+                print('associated index is ' + str(idx))
+                print('data length is ' + str(len(vertex_lists[m])))
+
+                # Remove the associated end point from the reference lists
+
+                end_points.pop(end_point_indices.index(idx))
+                end_point_indices.pop(end_point_indices.index(idx))
+
+                # Find the counting direction on the associated line,
+                # unless it is a path endpoint, in which case exit
+
                 path_points.append(vertex_lists[m][idx])
-                if vertex_lists[m][idx + 1][3] == vertex_lists[m][idx][3]:
-                    sign = 1
-                elif vertex_lists[m][idx - 1][3] == vertex_lists[m][idx][3]:
-                    sign = -1
+                if idx != 0 and idx != (len(vertex_lists[m]) - 1):
+
+                    if vertex_lists[m][idx + 1][3] == vertex_lists[m][idx][3]:
+                        sign = 1
+                    elif vertex_lists[m][idx - 1][3] == vertex_lists[m][idx][3]:
+                        sign = -1
+                else:
+                    break
             else:
                 path_points.append(vertex_lists[m][idx])
+            c += 1
+            print(c)
 
         # Build the path in the opposite direction
 
-        idx = initial_idx[0]
-        while idx != 0 or idx != len(vertex_lists[m]):
+        print('')
+
+        idx = initial_idx
+        print(idx)
+        end_points = all_end_points
+        end_point_indices = all_end_point_indices
+        while idx != 0 and idx != (len(vertex_lists[m]) - 1):
             if vertex_lists[m][idx][:-1] in end_points:
                 # Jump to the end point of the new line
+                # ISSUE: poping seems to be removing required values to have this indexing method work!
+                print(vertex_lists[m][idx][:-1])
+                print('index is ' + str(idx))
+
+                # Remove the end point from the reference lists
+
                 end_points.pop(end_point_indices.index(idx))
                 end_point_indices.pop(end_point_indices.index(idx))
-                idx = end_points.index(vertex_lists[m][idx][:-1])
+
+                # Find the index of the associated end point in the data
+
+                print('end points index is ' + str(end_points.index(vertex_lists[m][idx][:-1])))
+                idx = end_point_indices[end_points.index(vertex_lists[m][idx][:-1])]
+                print('associated index is ' + str(idx))
+                print('data length is ' + str(len(vertex_lists[m])))
+
+                # Remove the associated end point from the reference lists
+
+                end_points.pop(end_point_indices.index(idx))
+                end_point_indices.pop(end_point_indices.index(idx))
+
+                # Find the counting direction on the associated line,
+                # unless it is a path endpoint, in which case exit
+
                 path_points.append(vertex_lists[m][idx])
+                # if idx != 0 and idx != (len(vertex_lists[m]) - 1):
+
                 if vertex_lists[m][idx + 1][3] == vertex_lists[m][idx][3]:
                     sign = 1
                 elif vertex_lists[m][idx - 1][3] == vertex_lists[m][idx][3]:
                     sign = -1
+                # else:
+                #     break
             else:
                 path_points.append(vertex_lists[m][idx])
+            idx += sign
 
-        for n in range(len(vertex_lists[m])):
-            plt.scatter(vertex_lists[m][n][0], vertex_lists[m][n][1], color='k')
-            plt.text(vertex_lists[m][n][0], vertex_lists[m][n][1], str(n))
+        print('DONE')
+        print(len(path_points))
+        print(len(vertex_lists[m]))
+        for n in range(len(path_points)):
+            plt.scatter(path_points[n][0], path_points[n][1], color='k')
+            plt.text(path_points[n][0], path_points[n][1], str(n))
         plt.show()
 
 
