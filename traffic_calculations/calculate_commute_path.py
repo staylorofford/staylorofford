@@ -155,6 +155,10 @@ if __name__ == "__main__":
                 else:
                     break
 
+        # Reverse the path so far
+
+        path_points = list(reversed(path_points))
+
         # Build the path in the opposite direction
 
         idx = initial_idx
@@ -196,9 +200,22 @@ if __name__ == "__main__":
                     break
             idx += sign
 
+        if m == len(vertex_lists) - 1:
+            # For the return direction, have the first point at work
+            path_points = list(reversed(path_points))
+
+        # Calculate the distance of each point along the path
+        # NOT SURE THIS WORKS AS EXPECTED FOR THE FIRST 2 VERTICES
+
+        line_lengths = [0]
+        distances = [0]
+        for n in range(1, len(path_points)):
+            line_lengths.append(distance(path_points[n - 1], path_points[n]))
+            distances.append(int(sum(line_lengths)))
+
         for n in range(len(path_points)):
             plt.scatter(path_points[n][0], path_points[n][1], color='k')
-            plt.text(path_points[n][0], path_points[n][1], str(n), color='red')
+            plt.text(path_points[n][0], path_points[n][1], str(distances[n]))
         plt.show()
 
         # Write the path and distances to file
@@ -209,4 +226,5 @@ if __name__ == "__main__":
             for n in range(len(path_points)):
                 outfile.write(str(path_points[n][0]) + ',' +
                               str(path_points[n][1]) + ',' +
-                              str(path_points[n][2]) + '\n')
+                              str(path_points[n][2]) + ',' +
+                              str(distances[n]) + '\n')
