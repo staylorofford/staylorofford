@@ -1,18 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Parse data from csv-converted GHA Kermadec Spreadsheet and produce plots of analysis
+Parse data from GHA Kermadec Spreadsheet or csv of eventIDs and produce plots of data/analysis
 """
 
 import argparse
 import datetime
 from io import BytesIO
 import math
+import matplotlib
 import matplotlib.pyplot as plt
 from obspy.io.quakeml.core import Unpickler
 import pycurl
 import subprocess
-quakeml_reader = Unpickler()
 
+quakeml_reader = Unpickler()
 
 def get_event(eventID):
 
@@ -322,6 +323,39 @@ for i in range(len(event_details[0])):
     event_details[7].append((event_details[1][i].datetime - event_details[1][max_n].datetime).total_seconds() / 86400)
     event_details[8].append(distance([event_details[4][i], event_details[5][i]],
                               [event_details[4][max_n], event_details[5][max_n]]))
+
+# Plot event locations in 2D: needs work to show a third variable: mag, depth, time? Perhaps 3 subplots...
+
+fig = plt.figure(figsize=(9, 6))
+cmap = plt.cm.get_cmap('jet')
+EQ_loc_data = [event_details[7], event_details[2], event_details[3]]
+EQ_loc_labels = ['relative time', 'MLv', 'mB']
+for j in range(len(EQ_loc_data)):
+    if j == 0:
+        ax1 = plt.subplot(str(len(EQ_loc_data)) + '1' + str(j + 1))
+    else:
+        ax2 = plt.subplot(str(len(EQ_loc_data)) + '1' + str(j + 1), sharex=ax1)
+
+    plot = plt.scatter(event_details[4], event_details[5], s=9, c=EQ_loc_data[j], cmap=cmap)
+
+    plt.xlabel('longitude', labelpad=10)
+    plt.ylabel('latitude', labelpad=10)
+
+    cbar = plt.colorbar(plot)
+    cbar.ax.get_yaxis().labelpad=15
+    cbar.ax.set_ylabel(EQ_loc_labels[j], rotation=270)
+
+# Only have x-axis tick labels on last subplot
+
+for ax in plt.gcf().axes:
+    try:
+        ax.label_outer()
+    except:
+        pass
+
+plt.subplots_adjust(left=0.13, right=0.98, bottom=0.12, top=0.9)
+fig.suptitle('Earthquake Locations', y=0.95)
+plt.show()
 
 # Plot event location details over time
 
