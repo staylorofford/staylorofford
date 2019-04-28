@@ -82,10 +82,10 @@ if __name__ == "__main__":
     for m in range(len(path_files)):
         all_vertex_lists[m] = parse_path(path_files[m], path_columns)
 
-    # Remove any duplicates from the data (these do exists, for whatever reason!)
+    # Remove any duplicates from the data (these do exist, for whatever reason!)
 
     vertex_lists = [[], []]
-    for m in range(len(path_files)):
+    for m in range(len(all_vertex_lists)):
         for n in range(len(all_vertex_lists[m])):
             if all_vertex_lists[m][n] in vertex_lists[m]:
                 continue
@@ -132,10 +132,17 @@ if __name__ == "__main__":
 
                 # Find the counting direction on the associated line,
                 # unless it is a endpoint of the data, or somewhere already visited,
-                # in which case exit
+                # in the latter case exist, in the former case simply do not add the
+                # point to the path (this occurs due to overlapping line segments that
+                # are from separate lines).
 
                 if idx not in idx_visited:
-                    path_points.append(vertex_lists[m][idx])
+                    duplicate = False
+                    for path_point in path_points:
+                        if vertex_lists[m][idx][:-1] == path_point[:-1]:
+                            duplicate = True
+                    if not duplicate:
+                        path_points.append(vertex_lists[m][idx])
                     idx_visited.append(idx)
                 else:
                     break
@@ -149,8 +156,15 @@ if __name__ == "__main__":
                     break
             else:
 
+                # Add the point to the path, unless it is somewhere already visited
+
                 if idx not in idx_visited:
-                    path_points.append(vertex_lists[m][idx])
+                    duplicate = False
+                    for path_point in path_points:
+                        if vertex_lists[m][idx][:-1] == path_point[:-1]:
+                            duplicate = True
+                    if not duplicate:
+                        path_points.append(vertex_lists[m][idx])
                     idx_visited.append(idx)
                 else:
                     break
@@ -176,10 +190,17 @@ if __name__ == "__main__":
 
                 # Find the counting direction on the associated line,
                 # unless it is a endpoint of the data, or somewhere already visited,
-                # in which case exit
+                # in the latter case exist, in the former case simply do not add the
+                # point to the path (this occurs due to overlapping line segments that
+                # are from separate lines).
 
                 if idx not in idx_visited:
-                    path_points.append(vertex_lists[m][idx])
+                    duplicate = False
+                    for path_point in path_points:
+                        if vertex_lists[m][idx][:-1] == path_point[:-1]:
+                            duplicate = True
+                    if not duplicate:
+                        path_points.append(vertex_lists[m][idx])
                     idx_visited.append(idx)
                 else:
                     break
@@ -193,8 +214,15 @@ if __name__ == "__main__":
                     break
             else:
 
+                # Add the point to the path, unless it is somewhere already visited
+
                 if idx not in idx_visited:
-                    path_points.append(vertex_lists[m][idx])
+                    duplicate = False
+                    for path_point in path_points:
+                        if vertex_lists[m][idx][:-1] == path_point[:-1]:
+                            duplicate = True
+                    if not duplicate:
+                        path_points.append(vertex_lists[m][idx])
                     idx_visited.append(idx)
                 else:
                     break
@@ -205,18 +233,12 @@ if __name__ == "__main__":
             path_points = list(reversed(path_points))
 
         # Calculate the distance of each point along the path
-        # NOT SURE THIS WORKS AS EXPECTED FOR THE FIRST 2 VERTICES
 
         line_lengths = [0]
         distances = [0]
         for n in range(1, len(path_points)):
             line_lengths.append(distance(path_points[n - 1], path_points[n]))
             distances.append(int(sum(line_lengths)))
-
-        for n in range(len(path_points)):
-            plt.scatter(path_points[n][0], path_points[n][1], color='k')
-            plt.text(path_points[n][0], path_points[n][1], str(distances[n]))
-        plt.show()
 
         # Write the path and distances to file
 
