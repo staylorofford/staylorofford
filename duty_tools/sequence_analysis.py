@@ -100,60 +100,110 @@ def parse_spreadsheet_csv(file_path, data_columns):
     return data_lists
 
 
-def get_eventID_data(file_path, data_columns, event_fields):
+def get_eventID_data(eventIDs, data_columns, event_fields):
 
     """
-    Parse contents of eventID csv and gather relevant data into lists
-    :param file_path: path to sequence csv file
-    :return: lists containing relevant data from sequence csv
+    Gather data for each event in the eventID list
     """
 
     data_lists = [[] for i in range(len(data_columns))]
     event_details = [[] for i in range(len(event_fields))]
-    with open(file_path, 'r') as openfile:
-        for row in openfile:
+    for eventID in eventIDs:
+        event = get_event(eventID)[0]
 
-            # Get event data
+        # Parse data into data_lists format
 
-            eventID = row[:row.index('\n')]
-            event = get_event(eventID)[0]
+        data_lists[0].append(event.origins[0].time.datetime)
+        data_lists[1].append(True)  # can't tell from FDSN, so just say Yes
+        data_lists[2].append(True)  # these are all events
+        data_lists[3].append(eventID)
+        MLv = None
+        mB = None
+        for magnitude in event.magnitudes:
+            if magnitude.magnitude_type == 'MLv':
+                MLv = True
+                data_lists[4].append(float(magnitude.mag))
+            elif magnitude.magnitude_type == 'mB':
+                mB = True
+                data_lists[5].append(float(magnitude.mag))
+        if not MLv:
+            data_lists[4].append(float('nan'))
+        if not mB:
+            data_lists[5].append(float('nan'))
+        data_lists[6].append(False)  # Do not look for USGS matches
+        data_lists[7].append(float('nan'))  # As above
 
-            # Parse data into data_lists format
+        # Parse data into event_details format
 
-            data_lists[0].append(event.origins[0].time.datetime)
-            data_lists[1].append(True)  # can't tell from FDSN, so just say Yes
-            data_lists[2].append(True)  # these are all events
-            data_lists[3].append(eventID)
-            MLv = None
-            mB = None
-            for magnitude in event.magnitudes:
-                if magnitude.magnitude_type == 'MLv':
-                    MLv = True
-                    data_lists[4].append(float(magnitude.mag))
-                elif magnitude.magnitude_type == 'mB':
-                    mB = True
-                    data_lists[5].append(float(magnitude.mag))
-            if not MLv:
-                data_lists[4].append(float('nan'))
-            if not mB:
-                data_lists[5].append(float('nan'))
-            data_lists[6].append(False)  # Do not look for USGS matches
-            data_lists[7].append(float('nan'))  # As above
-
-            # Parse data into event_details format
-
-            event_details[0].append(event.resource_id)
-            event_details[1].append(event.origins[0].time)
-            event_details[4].append(event.origins[0].longitude)
-            event_details[5].append(event.origins[0].latitude)
-            event_details[6].append(event.origins[0].depth / 1000.0)
-            for magnitude in event.magnitudes:
-                if magnitude.magnitude_type == 'MLv':
-                    event_details[2].append(magnitude.mag)
-                elif magnitude.magnitude_type == 'mB':
-                    event_details[3].append(magnitude.mag)
+        event_details[0].append(event.resource_id)
+        event_details[1].append(event.origins[0].time)
+        event_details[4].append(event.origins[0].longitude)
+        event_details[5].append(event.origins[0].latitude)
+        event_details[6].append(event.origins[0].depth / 1000.0)
+        MLv = False
+        mB = False
+        for magnitude in event.magnitudes:
+            if magnitude.magnitude_type == 'MLv':
+                MLv = True
+                event_details[2].append(magnitude.mag)
+            elif magnitude.magnitude_type == 'mB':
+                mB = True
+                event_details[3].append(magnitude.mag)
+        if not MLv:
+            event_details[2].append(float('nan'))
+        if not mB:
+            event_details[3].append(float('nan'))
 
     return data_lists, event_details
+
+
+def get_eventIDs(parameter_file):
+
+    """
+    Parse parameter values from parameter file, then query FDSN for eventIDs satisfying those parameters
+    :param parameter_file: text file containing parameter=value pairs for the earthquake search
+    :return: a list of eventIDs
+    """
+
+    # Get parameter values from file
+
+    parameters = ['starttime', 'endtime', 'minlatitude', 'maxlatitude', 'minlongitude', 'maxlongitude', 'mindepth',
+                  'maxdepth', 'minmagnitude', 'maxmagnitude']
+    values = ['nan'] * len(parameters)
+    with open(parameter_file, 'r') as openfile:
+        for row in openfile:
+            rc = parameters.index(row.split('=')[0])
+            values[rc] = row.split('=')[1][:-1]
+
+    # Build GeoNet FDSN Query
+
+    query = 'https://service.geonet.org.nz/fdsnws/event/1/query?'
+    print('\nQuery parameters are:')
+    for n in range(len(parameters)):
+        print(parameters[n] + '=' + values[n])
+        if values[n] != 'nan':
+            query += parameters[n] + '=' + values[n] + '&'
+    query = query[:-1]
+
+    # Query FDSN
+
+    print('\nQuerying...')
+    queryresult = curl(query)
+    try:
+        events = quakeml_reader.loads(queryresult)
+    except:
+        print('There is an issue with your parameter values, please check them over.')
+        exit()
+
+    # Strip eventIDs from query
+    # NOTE: this is inefficient programming! All data that is later queried is already contained in this query result!
+
+    eventIDs = []
+    for event in events:
+        eventIDs.append(str(event.resource_id).split('/')[-1])
+    print(str(len(eventIDs)) + ' events found within query parameters\n')
+
+    return eventIDs
 
 
 def calculate_distribution(data_list, round_to=0.1):
@@ -236,32 +286,29 @@ magnitude_indices = [4, 5]
 # Parse arguments
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--params', type=str, help='Path to text file containing earthquake search parameter=value pairs')
 parser.add_argument('--csv', type=str, help='Path to csv file containing eventIDs in sequence')
-parser.add_argument('--xlsx', type=str, help='Path to excel spreadsheet of sequence')
+parser.add_argument('--xlsx', type=str, help='Path to excel spreadsheet containing all data of sequence')
+parser.add_argument('--t0', type=str, help='Optional: time to plot data relative to in ISO8601 format, default is'
+                                           'time of largest earthquake in data')
 args = parser.parse_args()
 
 # Parse data
 
 if args.xlsx:
+
     # If the input is a spreadsheet, convert to a csv and then parse data in from it
+
     p = subprocess.Popen('ssconvert ' + args.xlsx + ' sequence_analysis.csv', shell=True)
     p.wait()
     file_path = 'sequence_analysis.csv'
     data_lists = parse_spreadsheet_csv(file_path, data_columns)
-elif args.csv:
-    # If the input is a csv file containing a list of eventIDs, get the relevant data for these events
-    data_lists, event_details = get_eventID_data(args.csv, data_columns, event_fields)
-else:
-    print('You need to give an input argument, use -h flag to see which options are available.')
-    exit()
 
-# Get event details from GeoNet FDSN
-
-if not args.csv:
+    # Get event details from GeoNet FDSN for events in the spreadsheet
 
     event_details = [[] for i in range(len(event_fields))]
 
-    for eventID in dll[0][3]:
+    for eventID in data_lists[3]:
         try:
             event = get_event(eventID)[0]
         except:  # Fails on N/A value
@@ -277,13 +324,61 @@ if not args.csv:
             elif magnitude.magnitude_type == 'mB':
                 event_details[3].append(magnitude.mag)
 
-# Ensure both data lists are sorted by time
+elif args.csv:
+
+    # If the input is a csv file containing a list of eventIDs, get the relevant data for these events
+
+    eventIDs = []
+    with open(args.csv, 'r') as openfile:
+        for row in openfile:
+            eventIDs.append(row[:row.index('\n')])
+
+    data_lists, event_details = get_eventID_data(eventIDs, data_columns, event_fields)
+
+elif args.params:
+
+    # If the input is a parameter file, find the relevant eventIDs and gather data for these events
+
+    eventIDs = get_eventIDs(args.params)
+    data_lists, event_details = get_eventID_data(eventIDs, data_columns, event_fields)
+
+else:
+    print('You need to give an input argument, use -h flag to see which options are available.')
+    exit()
+
+# Ensure data are sorted by time
 
 [data_lists[0], data_lists[1], data_lists[2], data_lists[3],
 data_lists[4], data_lists[5], data_lists[6], data_lists[7]] = zip(*sorted(zip(data_lists[0], data_lists[1],
                                                                               data_lists[2], data_lists[3],
                                                                               data_lists[4], data_lists[5],
                                                                               data_lists[6], data_lists[7])))
+
+# Get details of largest event (MLv) in sequence
+
+max_mag = 0
+for i in range(len(data_lists[magnitude_indices[0]])):
+    if data_lists[magnitude_indices[0]][i] > max_mag:
+        max_mag, max_time, max_n = data_lists[magnitude_indices[0]][i], data_lists[0][i], i
+
+# Set relative time to plot data against
+
+tn = datetime.datetime.utcnow()  # get current time
+if args.t0:
+    t0 = datetime.datetime.strptime(args.t0, '%Y-%m-%dT%H:%M:%SZ')
+else:
+    t0 = max_time
+tn_rel = (tn - t0).total_seconds() / 86400.0  # get relative current time
+
+# Calculate time, distance of events from largest event in sequence
+
+times, distances = [], []
+for i in range(len(event_details[0])):
+    event_details[7].append((event_details[1][i].datetime - t0).total_seconds() / 86400)
+    event_details[8].append(distance([event_details[4][i], event_details[5][i]],
+                              [event_details[4][max_n], event_details[5][max_n]]))
+
+# Now that the event_details lists are full, ensure the data lists are sorted by time
 
 [event_details[1], event_details[0], event_details[2], event_details[3],
 event_details[4], event_details[5], event_details[6]] = zip(*sorted(zip(event_details[1], event_details[0],
@@ -308,21 +403,6 @@ for i in range(len(data_lists[0])):
             dll[idx + 1][j].append(data_lists[j][i])
     except:  # This fails when trying to get detection data that doesn't exist, but only after getting time data
         continue
-
-# Get details of largest event (mB) in sequence
-
-max_mag = 0
-for i in range(len(data_lists[magnitude_indices[1]])):
-    if data_lists[magnitude_indices[1]][i] > max_mag:
-        max_mag, max_time, max_n = data_lists[magnitude_indices[1]][i], data_lists[0][i], i
-
-# Calculate time, distance of events from largest event in sequence
-
-times, distances = [], []
-for i in range(len(event_details[0])):
-    event_details[7].append((event_details[1][i].datetime - event_details[1][max_n].datetime).total_seconds() / 86400)
-    event_details[8].append(distance([event_details[4][i], event_details[5][i]],
-                              [event_details[4][max_n], event_details[5][max_n]]))
 
 # Plot event locations in 2D: needs work to show a third variable: mag, depth, time? Perhaps 3 subplots...
 
@@ -354,7 +434,7 @@ for ax in plt.gcf().axes:
         pass
 
 plt.subplots_adjust(left=0.13, right=0.98, bottom=0.12, top=0.9)
-fig.suptitle('Earthquake Locations', y=0.95)
+fig.suptitle('Earthquake Locations, t0=' + str(t0), y=0.95)
 plt.show()
 
 # Plot event location details over time
@@ -370,7 +450,8 @@ for j in range(len(EQ_loc_data)):
 
     plt.scatter(event_details[7], EQ_loc_data[j], color='k', s=9)
     plt.axvline(0, color='k', linestyle='--', alpha=0.5)
-    plt.xlabel('days since largest earthquake', labelpad=10)
+    plt.axvline(tn_rel, color='r', alpha=0.5)
+    plt.xlabel('days from t0', labelpad=10)
     plt.ylabel(EQ_loc_labels[j], labelpad=10)
 
 # Only have x-axis tick labels on last subplot
@@ -382,7 +463,7 @@ for ax in plt.gcf().axes:
         pass
 
 plt.subplots_adjust(left=0.13, right=0.98, bottom=0.12, top=0.9)
-fig.suptitle('Earthquake Locations over Time', y=0.95)
+fig.suptitle('Earthquake Locations over Time, t0=' + str(t0), y=0.95)
 plt.show()
 
 # Plot relative distance of events over time
@@ -390,10 +471,11 @@ plt.show()
 fig = plt.figure(figsize=(9, 6))
 plt.scatter(event_details[7], event_details[8], color='k', s=9)
 plt.axvline(0, color='k', linestyle='--', alpha=0.5)
-plt.xlabel('days since largest earthquake', labelpad=10)
+plt.axvline(tn_rel, color='r', alpha=0.5)
+plt.xlabel('days from t0', labelpad=10)
 plt.ylabel('distance from largest earthquake (km)', labelpad=10)
 plt.subplots_adjust(left=0.13, right=0.98, bottom=0.12, top=0.9)
-fig.suptitle('Relative Time and Distance of Earthquakes in Sequence', y=0.95)
+fig.suptitle('Relative Time and Distance of Earthquakes in Sequence, t0=' + str(t0), y=0.95)
 plt.show()
 
 # Plot cumulative event number and cumulative moment release over time
@@ -405,7 +487,8 @@ for i in range(len(dll)):
     if len(dll[i][0]) != 0:
         plt.plot(dll[i][0], list(range(len(dll[i][0]))), color=colors[i], label=labels[i])
 plt.legend()
-plt.axvline(max_time, color='k', linestyle='--', alpha=0.5)
+plt.axvline(t0, color='k', linestyle='--', alpha=0.5)
+plt.axvline(tn, color='r', linestyle='-', alpha=0.5)
 plt.ylabel('cumulative\nevent count', labelpad=10)
 
 ax2 = plt.subplot('212', sharex=ax1)
@@ -421,9 +504,13 @@ for i in range(len(dll)):
                 mB_times.append(dll[i][0][j])
         plt.plot(mB_times, cumulative_moments, color=colors[i], label=labels[i])
         if i == 0:  # Give the cumulative moment magnitude
-            print('Cumulative Mw is ' + str((2 / 3) * math.log10(cumulative_moments[-1]) - 6.06))
+            try:
+                print('Cumulative Mw is ' + str((2 / 3) * math.log10(cumulative_moments[-1]) - 6.06))
+            except:  # Fails when there are no mB measurements
+                pass
 
-plt.axvline(max_time, color='k', linestyle='--', alpha=0.5)
+plt.axvline(t0, color='k', linestyle='--', alpha=0.5)
+plt.axvline(tn, color='r', alpha=0.5)
 plt.ylabel('cumulative\nmoment release', labelpad=10)
 plt.xlabel('time (UTC)', labelpad=10)
 plt.subplots_adjust(left=0.13, right=0.98, bottom=0.12, top=0.9)
@@ -443,7 +530,8 @@ for j in range(len(magnitude_indices)):
     for k in range(len(dll[0][magnitude_indices[j]])):
         if str(dll[0][magnitude_indices[j]][k]) != 'nan':
             plt.scatter(dll[0][0][k], dll[0][magnitude_indices[j]][k], color='k', s=3)
-    plt.axvline(max_time, color='k', linestyle='--', alpha=0.5)
+    plt.axvline(t0, color='k', linestyle='--', alpha=0.5)
+    plt.axvline(tn, color='r', alpha=0.5)
     plt.ylabel(data_columns[magnitude_indices[j]], labelpad=10)
 
 plt.xlabel('time (UTC)', labelpad=10)
@@ -469,8 +557,11 @@ for j in range(len(magnitude_indices)):
 
             # On both axes, plot all detections, and overlay all manual detections
 
-            mag_values, value_count = calculate_distribution(dll[i][magnitude_indices[j]])
-            plt.bar(mag_values, value_count, width=0.05, color=colors[0], label=labels[0])
+            try:
+                mag_values, value_count = calculate_distribution(dll[i][magnitude_indices[j]])
+                plt.bar(mag_values, value_count, width=0.05, color=colors[0], label=labels[0])
+            except:
+                pass
 
     plt.xlabel(data_columns[magnitude_indices[j]], labelpad=10)
     plt.ylabel('count', labelpad=10)
