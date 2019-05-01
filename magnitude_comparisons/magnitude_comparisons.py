@@ -5,6 +5,7 @@ import math
 import matplotlib.pyplot as plt
 import datetime
 import glob
+import scipy
 
 quakeml_reader = Unpickler()
 
@@ -33,10 +34,9 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
     # Curl FDSN response and parse quakeml bytes string through obspy
     # using an interative query approach when a single query fails
 
-
     factor = 1
     success = False
-    while success == False:
+    while not success:
 
         successes = 0
         events = []
@@ -268,7 +268,8 @@ def parse_data(filelist, split_str):
     return datalist, data_types
 
 
-def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist):
+def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
+                     show_matching=False):
 
     """
     Match events between two catalogs and save all events and their matched magnitudes to file
@@ -279,6 +280,7 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                                 between the catalog and the reference catalog
     :param max_dt: maximum seconds (absolute) between events for them to be matched
     :param max_dist: maximum distance (absolute) between events for them to be matched
+    :param show_matching: whether to plot relative distance and time of all events that have matched
     :return: saves matched events with matched magnitudes to a csv file
     """
 
@@ -319,6 +321,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
 
     # Match events between timeseries and fill in magnitude information in the datalist
     complete_pairs = []
+    matched_temporal_lengths = []
+    matched_spatial_lengths = []
     for n in range(len(timeseries_types)):
         if timeseries_types[n].split('_')[0] == catalog_names[0].split('_')[0] and \
                 timeseries_types[n].split('_')[2] in comparison_magnitudes[0]:
@@ -350,7 +354,10 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
 
                         # Calculate 2D length between event and reference events for matching criteria
 
-                        lengths = [[], []]
+                        temporal_lengths = []
+                        spatial_lengths = []
+                        lengths = []
+                        indices = []
                         ETi, ELa, ELo, EDe = [datetime.datetime.strptime(magnitude_timeseries[1][n][k], '%Y-%m-%dT%H:%M:%S.%fZ'),
                                               float(magnitude_timeseries[4][n][k]), float(magnitude_timeseries[5][n][k]),
                                               float(magnitude_timeseries[6][n][k])]
@@ -364,20 +371,27 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                             REx, REy, REz = to_cartesian(RELa, RELo, REDe)
 
                             temporal_length = abs((ETi - RETi).total_seconds())
-
                             if temporal_length > max_dt:
                                 continue
+                            else:
+                                temporal_lengths.append(temporal_length)
 
                             spatial_length = math.sqrt((Ex - REx) ** 2 + (Ey - REy) ** 2 + (Ez - REz) ** 2) / 1000.0
                             if spatial_length > max_dist:
                                 continue
+                            else:
+                                spatial_lengths.append(spatial_length)
 
-                            lengths[0].append(math.sqrt(temporal_length ** 2 + spatial_length ** 2))
-                            lengths[1].append(l)
+                            lengths.append(math.sqrt(temporal_length ** 2 + spatial_length ** 2))
+                            indices.append(l)
 
-                        if len(lengths[0]) > 0:
-                            match_idx = lengths[1][lengths[0].index(min(lengths[0]))] # Event match is that with smallest length
-                            datalist[1][event_index] = str(lengths[0][lengths[0].index(min(lengths[0]))])
+                        if len(lengths) > 0:
+                            match_idx = indices[lengths.index(min(lengths))] # Event match is that with smallest length
+
+                            matched_spatial_lengths.append(spatial_lengths[indices.index(match_idx)])
+                            matched_temporal_lengths.append(temporal_lengths[indices.index(match_idx)])
+
+                            datalist[1][event_index] = str(lengths[lengths.index(min(lengths))])
                             datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
                             magnitude_timeseries[3][n][k]
                             datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
@@ -385,6 +399,17 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
 
                 complete_pairs.append(str(n) + ',' + str(m))
 
+    if show_matching:
+
+        print('\nNOTE: To investigate the spread of matched data in an unconstrained format, ensure maximum limits are'
+              '>=1E9\n')
+
+        plt.scatter(matched_temporal_lengths, matched_spatial_lengths, s=2)
+        plt.xlabel('relative time (s)', labelpad=15)
+        plt.ylabel('relative distance (km)', labelpad=15)
+        plt.title('relative distance vs. time for all matched events')
+        plt.tight_layout()
+        plt.show()
 
     # Write datalist to file
 
@@ -453,13 +478,13 @@ def plot_timeseries(magnitude_timeseries, timeseries_types):
 
 # Set script parameters
 
-minmagnitude = 3.5     # minimum event magnitude to get from catalog
-minlatitude, maxlatitude = -60, -13  # minimum and maximum latitude for event search window
-minlongitude, maxlongitude = 145, -145  # minimum and maximum longitude for event search window
-starttime = '2012-01-01T00:00:00' #event query starttime
+minmagnitude = 4  # minimum event magnitude to get from catalog
+minlatitude, maxlatitude = -49, -33  # minimum and maximum latitude for event search window
+minlongitude, maxlongitude = 163, -175  # minimum and maximum longitude for event search window
+starttime = '2012-01-01T00:00:00'  # event query starttime
 
-max_dt = 100  # maximum time (s) between events in separate catalogs for them to be considered records of the same earthquake
-max_dist = 1000  # maximum distance (km) "
+max_dt = 10  # maximum time (s) between events in separate catalogs for them to be considered records of the same earthquake
+max_dist = 10000  # maximum distance (km) "
 
 # Define catalogs and their associated FDSN webservice event URL
 
@@ -477,6 +502,7 @@ comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)', 'M', 'Mw'], ['mww']]
 build_FDSN_timeseries = False
 build_GeoNet_Mw_timeseries = False
 matching = True
+show_matching = False
 
 # Build event catalogs from FDSN
 
@@ -511,7 +537,8 @@ if matching == True:
 
     print("Matching events within temporal and spatial distance limits and with the desired magnitude types")
 
-    match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist)
+    match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
+                     show_matching)
 
 # Load event magnitude data from file and do plotting
 
@@ -535,20 +562,30 @@ print('Saving plots...')
 complete_pairs = []
 for n in range(5, len(data_types)):
     for m in range(5, len(data_types)):
-        if n == m or (str(m) + ',' + str(n)) in complete_pairs:
+        if n == m or str(m) + ',' + str(n) in complete_pairs:
             continue
         plt.figure()
         x = []
         y = []
         for k in range(len(datalist[0])):
-            x.append(float(datalist[n][k]))
-            y.append(float(datalist[m][k]))
-        plt.scatter(x, y, s = 1)
+            if datalist[n][k][:3] != 'nan' and datalist[m][k][:3] != 'nan':
+                x.append(float(datalist[n][k]))
+                y.append(float(datalist[m][k]))
+
+        plt.scatter(x, y, s=2)
+        plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=0.5, alpha=0.5)
+
+        # Do a linear regression and plot this with the data
+
+        slope, intercept, _, _ = scipy.stats.mstats.theilslopes(y, x)
+        plt.plot([0, 10], [intercept, slope * 10 + intercept], color='k', linewidth=0.5, alpha=0.5)
+
         plt.xlabel(data_types[n])
         plt.ylabel(data_types[m])
         plt.grid(which = 'major', axis = 'both', linestyle = '-', alpha = 0.5)
-        plt.xlim(3, 10)
-        plt.ylim(3, 10)
+        plt.xlim(2, 10)
+        plt.ylim(2, 10)
+        plt.title('m=' + str(slope) + ', c=' + str(intercept), y=1.03)
         plt.gca().set_aspect('equal', adjustable='box')
         plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format = 'png', dpi = 300)
         plt.close()
