@@ -5,7 +5,7 @@ import math
 import matplotlib.pyplot as plt
 import datetime
 import glob
-import scipy
+from scipy.odr import Model, Data, ODR
 
 quakeml_reader = Unpickler()
 
@@ -476,6 +476,38 @@ def plot_timeseries(magnitude_timeseries, timeseries_types):
     plt.show()
 
 
+def f(P, x):
+
+    """
+    Point on line function to use in orthogonal regression
+    :param P: m, c values for line
+    :param x: dataset values
+    :return point on line values for x value in x
+    """
+
+    return P[0] * x + P[1]
+
+
+def orthregress(x, y):
+
+    """
+    Perform an orthogonal distance regression,
+    :param x: dataset 1 values
+    :param y: dataset 2 values
+    :return: gradient, intercept of orthogonal distance regression
+    """
+
+    # Run orthogonal regression
+
+    model = Model(f)
+    data = Data(x, y)
+    odr = ODR(data, model, beta0=[1, 1])
+    output = odr.run()
+    m, c = output.beta
+
+    return m, c
+
+
 # Set script parameters
 
 minmagnitude = 4  # minimum event magnitude to get from catalog
@@ -562,8 +594,14 @@ print('Saving plots...')
 complete_pairs = []
 for n in range(5, len(data_types)):
     for m in range(5, len(data_types)):
+
+        # Don't repeat plotting
+
         if n == m or str(m) + ',' + str(n) in complete_pairs:
             continue
+
+        # Build plotting dataset
+
         plt.figure()
         x = []
         y = []
@@ -572,22 +610,27 @@ for n in range(5, len(data_types)):
                 x.append(float(datalist[n][k]))
                 y.append(float(datalist[m][k]))
 
+        # Plot the data and a reference line for when magnitudes are equivalent at all values
+
         plt.scatter(x, y, s=2)
         plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=0.5, alpha=0.5)
 
-        # Do a linear regression and plot this with the data
+        # Do an orthogonal distance regression and plot this overtop of the data, showing the
+        # linear relationship between the magnitudes
 
-        slope, intercept, _, _ = scipy.stats.mstats.theilslopes(y, x)
+        slope, intercept = orthregress(x, y)
         plt.plot([0, 10], [intercept, slope * 10 + intercept], color='k', linewidth=0.5, alpha=0.5)
+
+        # Add plot features for clarity
 
         plt.xlabel(data_types[n])
         plt.ylabel(data_types[m])
-        plt.grid(which = 'major', axis = 'both', linestyle = '-', alpha = 0.5)
+        plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
         plt.xlim(2, 10)
         plt.ylim(2, 10)
-        plt.title('m=' + str(slope) + ', c=' + str(intercept), y=1.03)
+        plt.title('m=' + str(slope)[:4] + ', c=' + str(intercept)[:4], y=1.03)
         plt.gca().set_aspect('equal', adjustable='box')
-        plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format = 'png', dpi = 300)
+        plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format='png', dpi=300)
         plt.close()
 
         complete_pairs.append(str(n) + ',' + str(m))
