@@ -508,15 +508,64 @@ def orthregress(x, y):
     return m, c
 
 
-# Set script parameters
+def probability(sample_magnitudes, sample_depths, sample_times,
+                min_mag, max_mag, min_depth, max_depth,
+                probability_time_period, number_of_events):
+
+    """
+    Calculate the Poisson probability that a number of earthquakes will occur with magnitude value
+    within a given range within a given time period
+    :param sample_magnitudes: list of magnitude values for earthquakes in the sample
+    :param sample_depths: list of event depths for earthquakes in the sample
+    :param sample_times: list of time values for earthquakes in the sample
+    :param min_mag: minimum magnitude to include in the probability
+    :param max_mag: maximum magnitude to include in the probability
+    :param min_depth: minimum event depth to include in the probability (in km)
+    :param max_depth: maximum event depth to include in the probability (in km)
+    :param probability_time_period: length of time (in seconds) to calculate the probability of at least 1
+                                    earthquake occurring over
+    :param number_of_events: number of events to calculate probability of occurrence for, use 'any' to calculate
+                             the probability at least 1 event
+    :return: probability of earthquake(s) happening in the length of time input with a magnitude in the range input
+    """
+
+    # Calculate set of magnitudes to calculate mean rate for
+
+    set_magnitudes = []
+    set_times = []
+    for m in range(len(sample_magnitudes)):
+        if min_mag <= sample_magnitudes[m] <= max_mag and min_depth <= sample_depths[m] <= max_depth:
+            set_magnitudes.append(sample_magnitudes[m])
+            set_times.append(sample_times[m])
+
+    # Calculate rate of an earthquakes in the magnitude range per second
+
+    mean_rate = len(set_magnitudes) / (max(set_times) - min(set_times)).total_seconds()
+
+    # Calculate rate of an earthquake in the magnitude range for the given time period
+
+    mean_rate_time_period = mean_rate * probability_time_period
+
+    # Calculate Poisson probability of 1 or more earthquakes happening in this time period
+
+    if number_of_events == 'any':
+
+        p = 1 - (math.exp(-mean_rate_time_period) * (mean_rate_time_period ** 0) / math.factorial(0))
+
+    else:
+
+        p = (math.exp(-1 * mean_rate_time_period) * (mean_rate_time_period ** number_of_events) /
+            math.factorial(number_of_events))
+
+    return p
+
+
+# Set data gathering parameters
 
 minmagnitude = 4  # minimum event magnitude to get from catalog
-minlatitude, maxlatitude = -49, -33  # minimum and maximum latitude for event search window
-minlongitude, maxlongitude = 163, -175  # minimum and maximum longitude for event search window
+minlatitude, maxlatitude = -33, -25  # minimum and maximum latitude for event search window
+minlongitude, maxlongitude = 177, -169  # minimum and maximum longitude for event search window
 starttime = '2012-01-01T00:00:00'  # event query starttime
-
-max_dt = 10  # maximum time (s) between events in separate catalogs for them to be considered records of the same earthquake
-max_dist = 10000  # maximum distance (km) "
 
 # Define catalogs and their associated FDSN webservice event URL
 
@@ -529,11 +578,27 @@ catalogs = [[] for i in range(len(catalog_names))]
 
 comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)', 'M', 'Mw'], ['mww']]
 
+# Set matching parameters
+
+max_dt = 10  # maximum time (s) between events in separate catalogs for them to be considered records of the same earthquake
+max_dist = 10000 # maximum distance (km) "
+
+# Set probability parameters
+
+probability_magnitude_types = ['MLv', 'mB', 'Mw(mB)', 'M', 'mww']
+min_mag = 6
+max_mag = 10
+min_depth = 0  # minimum depth of earthquake to include, in km
+max_depth = 100  # maximum depth of earthquake to include, in km
+probability_time_period = 86400 * 7  # time period to calculate probability over, in seconds
+number_of_events = 'any'  # number of events to calculate probability for
+
 # Set what level of processing you want the script to do
 
 build_FDSN_timeseries = False
 build_GeoNet_Mw_timeseries = False
-matching = True
+probabilities = True
+matching = False
 show_matching = False
 
 # Build event catalogs from FDSN
@@ -560,80 +625,111 @@ if build_GeoNet_Mw_timeseries == True:
 
     GeoNet_Mw(minmagnitude, starttime)
 
-# Load timeseries data from files and do event matching
+if probabilities or matching:
 
-if matching == True:
+    # Load timeseries data from files
 
     magnitude_timeseries_files = glob.glob('./*timeseries.csv')
     magnitude_timeseries, timeseries_types = parse_data(magnitude_timeseries_files, '_timeseries')
+
+if probabilities:
+
+    # Get data for each magnitude type
+
+    for m in range(len(magnitude_timeseries[2])):
+        sample_times = []
+        sample_magnitudes = []
+        sample_depths = []
+        if magnitude_timeseries[2][m][0] in probability_magnitude_types:
+            for n in range(len(magnitude_timeseries[2][m])):
+                sample_times.append(datetime.datetime.strptime(magnitude_timeseries[1][m][n], '%Y-%m-%dT%H:%M:%S.%fZ'))
+                sample_magnitudes.append(float(magnitude_timeseries[3][m][n]))
+                sample_depths.append(float(magnitude_timeseries[6][m][n]) / 1000.0)
+        else:
+            continue
+
+        # Calculate probability
+
+        p = probability(sample_magnitudes, sample_depths, sample_times,
+                        min_mag, max_mag, min_depth, max_depth,
+                        probability_time_period, number_of_events)
+
+        print('Probability of ' + str(number_of_events) + ' events of magnitude type ' + str(timeseries_types[m]) +
+              ' between magnitude values ' + str(min_mag) + ' - ' + str(max_mag) +
+              ' betweeen depths of ' + str(min_depth) + ' - ' + str(max_depth) +
+              ' km occurring in ' + str(probability_time_period) + ' seconds is ' + str(p) + '\n')
+
+if matching:
+
+    # Do matching
 
     print("Matching events within temporal and spatial distance limits and with the desired magnitude types")
 
     match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
                      show_matching)
 
-# Load event magnitude data from file and do plotting
+    # Load magnitude match data
 
-with open('./magnitude_matches_all.csv', 'r') as openfile:
-    rc = 0
-    for row in openfile:
-        if rc == 0:
-            data_types = row.split(',')
-            data_types[-1] = data_types[-1][:-1]
-            datalist = [[] for i in range(len(data_types))]
-            rc += 1
-        else:
-            rowsplit = row.split(',')
-            for i in range(len(rowsplit)):
-                datalist[i].append(rowsplit[i])
+    with open('./magnitude_matches_all.csv', 'r') as openfile:
+        rc = 0
+        for row in openfile:
+            if rc == 0:
+                data_types = row.split(',')
+                data_types[-1] = data_types[-1][:-1]
+                datalist = [[] for i in range(len(data_types))]
+                rc += 1
+            else:
+                rowsplit = row.split(',')
+                for i in range(len(rowsplit)):
+                    datalist[i].append(rowsplit[i])
 
-print('Saving plots...')
+    print('Saving plots...')
 
-# Magnitude value plotting
+    # Magnitude value plotting
 
-complete_pairs = []
-for n in range(5, len(data_types)):
-    for m in range(5, len(data_types)):
+    complete_pairs = []
+    for n in range(5, len(data_types)):
+        for m in range(5, len(data_types)):
 
-        # Don't repeat plotting
+            # Don't repeat plotting
 
-        if n == m or str(m) + ',' + str(n) in complete_pairs:
-            continue
+            if n == m or str(m) + ',' + str(n) in complete_pairs:
+                continue
 
-        # Build plotting dataset
+            # Build plotting dataset
 
-        plt.figure()
-        x = []
-        y = []
-        for k in range(len(datalist[0])):
-            if datalist[n][k][:3] != 'nan' and datalist[m][k][:3] != 'nan':
-                x.append(float(datalist[n][k]))
-                y.append(float(datalist[m][k]))
+            plt.figure()
+            x = []
+            y = []
+            for k in range(len(datalist[0])):
+                if datalist[n][k][:3] != 'nan' and datalist[m][k][:3] != 'nan':
+                    x.append(float(datalist[n][k]))
+                    y.append(float(datalist[m][k]))
 
-        # Plot the data and a reference line for when magnitudes are equivalent at all values
+            # Plot the data and a reference line for when magnitudes are equivalent at all values
 
-        plt.scatter(x, y, s=2)
-        plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=0.5, alpha=0.5)
+            plt.scatter(x, y, s=2)
+            plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=0.5, alpha=0.5)
 
-        # Do an orthogonal distance regression and plot this overtop of the data, showing the
-        # linear relationship between the magnitudes
+            # Do an orthogonal distance regression and plot this overtop of the data, showing the
+            # linear relationship between the magnitudes
 
-        slope, intercept = orthregress(x, y)
-        plt.plot([0, 10], [intercept, slope * 10 + intercept], color='k', linewidth=0.5, alpha=0.5)
+            slope, intercept = orthregress(x, y)
+            plt.plot([0, 10], [intercept, slope * 10 + intercept], color='k', linewidth=0.5, alpha=0.5)
 
-        # Add plot features for clarity
+            # Add plot features for clarity
 
-        plt.xlabel(data_types[n])
-        plt.ylabel(data_types[m])
-        plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
-        plt.xlim(2, 10)
-        plt.ylim(2, 10)
-        plt.title('m=' + str(slope)[:4] + ', c=' + str(intercept)[:4], y=1.03)
-        plt.gca().set_aspect('equal', adjustable='box')
-        plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format='png', dpi=300)
-        plt.close()
+            plt.xlabel(data_types[n])
+            plt.ylabel(data_types[m])
+            plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
+            plt.xlim(2, 10)
+            plt.ylim(2, 10)
+            plt.title('m=' + str(slope)[:4] + ', c=' + str(intercept)[:4], y=1.03)
+            plt.gca().set_aspect('equal', adjustable='box')
+            plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format='png', dpi=300)
+            plt.close()
 
-        complete_pairs.append(str(n) + ',' + str(m))
+            complete_pairs.append(str(n) + ',' + str(m))
 
 
 # # Sort data by alphabetic magnitude type
