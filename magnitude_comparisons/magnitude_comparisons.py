@@ -430,33 +430,6 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
             outfile.write(outstr[:-1] + '\n')
 
 
-def cumulative_sum(times):
-
-    """
-    Generate a cumulative sum timeseries for event times in times
-    :param times: list of ISO8601 format times (strings)
-    :return: list of event times (datetime objects), cumulative sum at each event time (list of int)
-    """
-
-    cumulative_event_sum = 0
-    cumulative_event_sums = []
-    event_times = []
-
-    # Generate cumulative sum list
-    # and list of event times
-
-    times.sort()
-    for time in times:
-
-        cumulative_event_sum += 1
-        cumulative_event_sums.append(cumulative_event_sum)
-
-        event_time = datetime.datetime.strptime(time, '%Y-%m-%dT%H:%M:%S.%fZ')
-        event_times.append(event_time)
-
-    return event_times, cumulative_event_sums
-
-
 def plot_timeseries(magnitude_timeseries, timeseries_types):
 
     """
@@ -522,7 +495,7 @@ def probability(sample_magnitudes, sample_depths, sample_times,
     :param max_mag: maximum magnitude to include in the probability
     :param min_depth: minimum event depth to include in the probability (in km)
     :param max_depth: maximum event depth to include in the probability (in km)
-    :param probability_time_period: length of time (in seconds) to calculate the probability of at least 1
+    :param probability_time_period: length of time (in hours) to calculate the probability of at least 1
                                     earthquake occurring over
     :param number_of_events: number of events to calculate probability of occurrence for, use 'any' to calculate
                              the probability at least 1 event
@@ -538,9 +511,11 @@ def probability(sample_magnitudes, sample_depths, sample_times,
             set_magnitudes.append(sample_magnitudes[m])
             set_times.append(sample_times[m])
 
-    # Calculate rate of an earthquakes in the magnitude range per second
+    # Calculate rate of an earthquakes in the magnitude range per hour
 
-    mean_rate = len(set_magnitudes) / (max(set_times) - min(set_times)).total_seconds()
+    N = len(set_magnitudes)
+
+    mean_rate = N / (max(set_times) - min(set_times)).total_seconds() * 3600.0
 
     # Calculate rate of an earthquake in the magnitude range for the given time period
 
@@ -557,7 +532,7 @@ def probability(sample_magnitudes, sample_depths, sample_times,
         p = (math.exp(-1 * mean_rate_time_period) * (mean_rate_time_period ** number_of_events) /
             math.factorial(number_of_events))
 
-    return p
+    return p, N
 
 
 # Set data gathering parameters
@@ -585,12 +560,12 @@ max_dist = 10000 # maximum distance (km) "
 
 # Set probability parameters
 
-probability_magnitude_types = ['MLv', 'mB', 'Mw(mB)', 'M', 'mww']
-min_mag = 6
+probability_magnitude_types = ['MLv', 'mB', 'Mw(mB)', 'M']  # magnitude types to find the largest magnitude for each event
+min_mag = 6.5
 max_mag = 10
 min_depth = 0  # minimum depth of earthquake to include, in km
-max_depth = 100  # maximum depth of earthquake to include, in km
-probability_time_period = 86400 * 7  # time period to calculate probability over, in seconds
+max_depth = 150  # maximum depth of earthquake to include, in km
+probability_time_period = 24 * 7  # time period to calculate probability over, in hours
 number_of_events = 'any'  # number of events to calculate probability for
 
 # Set what level of processing you want the script to do
@@ -636,28 +611,46 @@ if probabilities:
 
     # Get data for each magnitude type
 
+    all_events = []
+    all_times = []
+    all_magnitudes = []
+    all_depths = []
     for m in range(len(magnitude_timeseries[2])):
-        sample_times = []
-        sample_magnitudes = []
-        sample_depths = []
         if magnitude_timeseries[2][m][0] in probability_magnitude_types:
             for n in range(len(magnitude_timeseries[2][m])):
-                sample_times.append(datetime.datetime.strptime(magnitude_timeseries[1][m][n], '%Y-%m-%dT%H:%M:%S.%fZ'))
-                sample_magnitudes.append(float(magnitude_timeseries[3][m][n]))
-                sample_depths.append(float(magnitude_timeseries[6][m][n]) / 1000.0)
-        else:
-            continue
+                all_events.append(magnitude_timeseries[0][m][n])
+                all_times.append(datetime.datetime.strptime(magnitude_timeseries[1][m][n], '%Y-%m-%dT%H:%M:%S.%fZ'))
+                all_magnitudes.append(float(magnitude_timeseries[3][m][n]))
+                all_depths.append(float(magnitude_timeseries[6][m][n]) / 1000.0)
 
-        # Calculate probability
+    # Find the largest magnitude for each event
 
-        p = probability(sample_magnitudes, sample_depths, sample_times,
-                        min_mag, max_mag, min_depth, max_depth,
-                        probability_time_period, number_of_events)
+    sample_events = []
+    sample_times = []
+    sample_magnitudes = []
+    sample_depths = []
+    for m in range(len(all_events)):
+        if all_events[m] not in sample_events:
+            all_sample_magnitudes = []
+            for n in range(len(all_events)):
+                if all_events[m] == all_events[n]:
+                    all_sample_magnitudes.append(all_magnitudes[n])
+            sample_events.append(all_events[m])
+            sample_times.append(all_times[m])
+            sample_depths.append(all_depths[m])
+            sample_magnitudes.append(max(all_sample_magnitudes))
 
-        print('Probability of ' + str(number_of_events) + ' events of magnitude type ' + str(timeseries_types[m]) +
-              ' between magnitude values ' + str(min_mag) + ' - ' + str(max_mag) +
-              ' betweeen depths of ' + str(min_depth) + ' - ' + str(max_depth) +
-              ' km occurring in ' + str(probability_time_period) + ' seconds is ' + str(p) + '\n')
+    # Calculate probability
+
+    p, N = probability(sample_magnitudes, sample_depths, sample_times,
+                       min_mag, max_mag, min_depth, max_depth,
+                       probability_time_period, number_of_events)
+
+    print('Probability of ' + str(number_of_events) + ' events' +
+          ' between magnitude values ' + str(min_mag) + ' - ' + str(max_mag) +
+          ' betweeen depths of ' + str(min_depth) + ' - ' + str(max_depth) +
+          ' km occurring in ' + str(probability_time_period) + ' hours is ' +
+          str(p) + ', from ' + str(N) + ' samples\n')
 
 if matching:
 
@@ -724,20 +717,9 @@ if matching:
             plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
             plt.xlim(2, 10)
             plt.ylim(2, 10)
-            plt.title('m=' + str(slope)[:4] + ', c=' + str(intercept)[:4], y=1.03)
+            plt.title('m=' + str(slope)[:5] + ', c=' + str(intercept)[:5], y=1.03)
             plt.gca().set_aspect('equal', adjustable='box')
             plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format='png', dpi=300)
             plt.close()
 
             complete_pairs.append(str(n) + ',' + str(m))
-
-
-# # Sort data by alphabetic magnitude type
-#
-# for n in range(len(magnitude_timeseries)):
-#     _, magnitude_timeseries[n] = zip(*sorted(zip(timeseries_types, magnitude_timeseries[n])))
-# timeseries_types.sort()
-#
-# # Generate cumulative sum timeseries for each magnitude and plot it
-#
-# plot_timeseries(magnitude_timeseries, timeseries_types)
