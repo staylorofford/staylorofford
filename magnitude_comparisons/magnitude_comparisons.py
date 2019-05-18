@@ -62,7 +62,8 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
 
             try:
 
-                print('\nAttempting FDSN catalog query for events between M ' + str(magnitude_limits[i - 1]) + ' and ' + str(magnitude_limits[i]))
+                print('\nAttempting FDSN catalog query for events between M ' + str(magnitude_limits[i - 1]) + ' and '
+                      + str(magnitude_limits[i]))
                 queryresult = curl(query)
 
                 catalog = quakeml_reader.loads(queryresult)
@@ -537,10 +538,11 @@ def probability(sample_magnitudes, sample_depths, sample_times,
 
 # Set data gathering parameters
 
-minmagnitude = 4  # minimum event magnitude to get from catalog
-minlatitude, maxlatitude = -33, -25  # minimum and maximum latitude for event search window
-minlongitude, maxlongitude = 177, -169  # minimum and maximum longitude for event search window
-starttime = '2012-01-01T00:00:00'  # event query starttime
+minmagnitude = 6  # minimum event magnitude to get from catalog
+minlatitude, maxlatitude = -67, -33  # minimum and maximum latitude for event search window
+minlongitude, maxlongitude = 145, -175  # minimum and maximum longitude for event search window
+# starttime = '2012-01-01T00:00:00'  # event query starttime
+starttime = '0001-01-01T00:00:00'  # event query starttime
 
 # Define catalogs and their associated FDSN webservice event URL
 
@@ -551,7 +553,7 @@ catalogs = [[] for i in range(len(catalog_names))]
 # Define comparison magnitudes: first nested list is from GeoNet catalog, second if from USGS
 # Code will do all combinations across the two catalogs
 
-comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)', 'M', 'Mw'], ['mww']]
+comparison_magnitudes = [['MLv', 'ML', 'mB', 'Mw(mB)', 'M', 'Mw'], ['mww']]
 
 # Set matching parameters
 
@@ -560,8 +562,8 @@ max_dist = 10000 # maximum distance (km) "
 
 # Set probability parameters
 
-probability_magnitude_types = ['MLv', 'mB', 'Mw(mB)', 'M']  # magnitude types to find the largest magnitude for each event
-min_mag = 6.5
+probability_magnitude_types = comparison_magnitudes[0]  # magnitude types to find the largest magnitude for each event
+min_mag = 6
 max_mag = 10
 min_depth = 0  # minimum depth of earthquake to include, in km
 max_depth = 150  # maximum depth of earthquake to include, in km
@@ -570,8 +572,8 @@ number_of_events = 'any'  # number of events to calculate probability for
 
 # Set what level of processing you want the script to do
 
-build_FDSN_timeseries = False
-build_GeoNet_Mw_timeseries = False
+build_FDSN_timeseries = True
+build_GeoNet_Mw_timeseries = True
 probabilities = True
 matching = False
 show_matching = False
@@ -609,7 +611,32 @@ if probabilities or matching:
 
 if probabilities:
 
-    # Get data for each magnitude type
+    # Calculate probability for each magnitude type
+
+    for m in range(len(magnitude_timeseries[2])):
+        sample_times = []
+        sample_magnitudes = []
+        sample_depths = []
+
+        if magnitude_timeseries[2][m][0] in probability_magnitude_types:
+            for n in range(len(magnitude_timeseries[2][m])):
+                sample_times.append(datetime.datetime.strptime(magnitude_timeseries[1][m][n], '%Y-%m-%dT%H:%M:%S.%fZ'))
+                sample_magnitudes.append(float(magnitude_timeseries[3][m][n]))
+                sample_depths.append(float(magnitude_timeseries[6][m][n]) / 1000.0)
+        else:
+            continue
+
+        p, N = probability(sample_magnitudes, sample_depths, sample_times,
+                           min_mag, max_mag, min_depth, max_depth,
+                           probability_time_period, number_of_events)
+
+        print('Probability of ' + str(number_of_events) + ' events of magnitude type ' + str(timeseries_types[m]) +
+              ' between magnitude values ' + str(min_mag) + ' - ' + str(max_mag) +
+              ' betweeen depths of ' + str(min_depth) + ' - ' + str(max_depth) +
+              ' km occurring in ' + str(probability_time_period) + ' hours is ' +
+              str(p) + ', from ' + str(N) + ' samples\n')
+
+    # Calculate probability using maximum magnitude for each event
 
     all_events = []
     all_times = []
@@ -646,7 +673,7 @@ if probabilities:
                        min_mag, max_mag, min_depth, max_depth,
                        probability_time_period, number_of_events)
 
-    print('Probability of ' + str(number_of_events) + ' events' +
+    print('Probability of ' + str(number_of_events) + ' events of any of the above magnitude types' +
           ' between magnitude values ' + str(min_mag) + ' - ' + str(max_mag) +
           ' betweeen depths of ' + str(min_depth) + ' - ' + str(max_depth) +
           ' km occurring in ' + str(probability_time_period) + ' hours is ' +
