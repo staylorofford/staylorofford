@@ -27,7 +27,6 @@ def parse_sorted_path(sorted_path_file):
     distances = []
 
     with open(sorted_path_file, 'r') as openfile:
-        net_distance = 0
 
         header = '0'
         for row in openfile:
@@ -45,13 +44,7 @@ def parse_sorted_path(sorted_path_file):
             path_points[0].append(float(cols[0]))
             path_points[1].append(float(cols[1]))
             path_points[2].append(float(cols[2]))
-
-            try:
-                net_distance += calc_distance([path_points[0][-1], path_points[1][-1], path_points[2][-1]],
-                                              [path_points[0][-2], path_points[1][-2], path_points[2][-2]])
-                distances.append(net_distance)
-            except:  # Fails on first point
-                pass
+            distances.append(float(cols[3]))
 
     return path_points, distances
 
@@ -127,8 +120,14 @@ if __name__ == "__main__":
     parser.add_argument('sorted_southgoing_path_csv', type=str, help="Path to csv file containing sorted"
                                                                      "southgoing path points")
     parser.add_argument('file_directory', type=str, help="Path to directory containing time series csv files")
-    parser.add_argument('--gates', type=str, help="Optional: distance along path to begin analysis at. Default is 0 m."
-                                                  "Format is northgoing_distance,southgoing_distance in m, e.g. 10,10")
+    parser.add_argument('--northgoing_gates', type=str, help="Optional: distances along northgoing path to begin/end "
+                                                             "analysis at. Format is:"
+                                                             "northgoing start distance,northgoing end distance, in m, "
+                                                             "e.g. 0,1000")
+    parser.add_argument('--southgoing_gates', type=str, help="Optional: distances along southgoing path to begin/end "
+                                                             "analysis at. Format is:"
+                                                             "southgoing start distance,southgoing end distance, in m, "
+                                                             "e.g. 0,1000")
     parser.add_argument('--accuracy', type=int, help="Optional: location accuracy value above which to discard data " +
                                                      "points. Default = 10 m")
     parser.add_argument('--threshold', type=int, help="Optional: distance of data point from path at which data point "
@@ -138,7 +137,8 @@ if __name__ == "__main__":
     northgoing_path_file = args.sorted_northgoing_path_csv
     southgoing_path_file = args.sorted_southgoing_path_csv
     file_dir = args.file_directory
-    gates = args.gates
+    northgoing_gates = args.northgoing_gates
+    southgoing_gates = args.southgoing_gates
     accuracy = args.accuracy
     threshold = args.threshold
 
@@ -169,7 +169,7 @@ if __name__ == "__main__":
 
     csv_files = glob.glob(file_dir + '*csv')
     for csv_file in csv_files:
-        start_date = csv_file.split('/')[-1][:csv_file.split('/')[-1].index('.')]
+        all_data_lists = [[] for i in range(len(data_columns))]
         with open(csv_file, 'r') as openfile:
             rc = 0
             for row in openfile:
@@ -192,21 +192,36 @@ if __name__ == "__main__":
                 if float(cols[dc_idx[data_columns.index('accuracy')]].replace("\"", "")) > accuracy:
                     continue
 
-                # Determine if data point is north- or south-going using UTC date to determine NZT morning or evening
-
-                if cols[dc_idx[data_columns.index('time')]][:10].replace('-', '') == start_date:
-                    m = 0
-                else:
-                    m = 1
-
                 # Parse the data
 
                 for n in range(len(data_columns)):
                     try:
-                        data_lists[m][n].append((datetime.datetime.strptime(cols[dc_idx[n]][:19], '%Y-%m-%dT%H:%M:%S') -
+                        all_data_lists[n].append((datetime.datetime.strptime(cols[dc_idx[n]][:19], '%Y-%m-%dT%H:%M:%S') -
                                                 reference_time).total_seconds())
                     except:
-                        data_lists[m][n].append(float(cols[dc_idx[n]].replace("\"", "")))
+                        all_data_lists[n].append(float(cols[dc_idx[n]].replace("\"", "")))
+
+        # Split the data list into north- and south-going
+
+        time_steps = []
+        for i in range(1, len(all_data_lists[0])):
+            time_steps.append(abs(all_data_lists[0][i - 1] - all_data_lists[0][i]))
+        if max(time_steps) > 3600:  # If there is a time step of over an hour, i.e. a work day
+            jump_time = all_data_lists[0][time_steps.index(max(time_steps))]
+            for k in range(len(all_data_lists[0])):
+                if all_data_lists[0][k] <= jump_time:  # north-going is before the work day
+                    m = 0
+                else:
+                    m = 1
+                for n in range(len(data_columns)):
+                    data_lists[m][n].append(all_data_lists[n][k])
+        else:
+            if all_data_lists[2][-1] - all_data_lists[2][0] > 0:  # north-going
+                m = 0
+            else:  # otherwise south-going
+                m = 1
+            for n in range(len(data_columns)):
+                data_lists[m][n].extend(all_data_lists[n])
 
     # Calculate distances of each data point along the path
 
@@ -267,27 +282,41 @@ if __name__ == "__main__":
 
     # Apply gates
 
-    if gates:
-        gates = gates.split(',')
+    if northgoing_gates or southgoing_gates:
+        gates = [[], []]
+        if not northgoing_gates:
+            gates[0] = ['0', '999999']
+        else:
+            gates[0] = northgoing_gates.split(',')
+
+        if not southgoing_gates:
+            gates[1] - ['0', '999999']
+        else:
+            gates[1] = southgoing_gates.split(',')
+
         gated_times = [[], []]
         gated_distances = [[], []]
         for m in range(len(times)):
+
+            gate_time = 0
+            gate_start_distance = float(gates[m][0])
+            gate_end_distance = float(gates[m][1])
             for n in range(len(times[m])):
-                gated_distance = distances[m][n] - float(gates[m])
-                if gated_distance >= 0:
-                    gated_times[m].append(times[m][n])
+                gated_distance = distances[m][n] - gate_start_distance
+                if gated_distance < 0:  # Record the past time up until the gate distance is passed
+                    gate_time = times[m][n]
+                elif distances[m][n] <= gate_end_distance:
+                    # Once the gate distance is passed, save times relative to the last time pre-gate, unless
+                    # the end gate has been passed also
+                    gated_times[m].append(times[m][n] - gate_time)
                     gated_distances[m].append(gated_distance)
+
         times = gated_times
         distances = gated_distances
 
-        # Reset times
-
-        for m in range(len(times)):
-            reference_time = times[m][0]
-            for n in range(len(times[m])):
-                times[m][n] = times[m][n] - reference_time
+    # Need to do something else with the data to get it in a format that can handle partial datasets
 
     for m in range(len(times)):
 
-        plt.scatter(times[m], distances[m])
+        plt.scatter(distances[m], times[m])
         plt.show()
