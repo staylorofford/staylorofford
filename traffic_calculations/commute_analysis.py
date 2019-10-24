@@ -3,6 +3,7 @@ Before running this code:
 - download .csv.xlsx files from google-drive
 - using ssconvert, convert the file from xlsx to csv:
     for file in `ls *xlsx`; do ssconvert $file ${file:0:12}; rm $file; done
+- using WGS84_data_to_NZTM.py code, convert the coordinates in the .csv files to NZTM
 """
 
 import argparse
@@ -128,6 +129,18 @@ if __name__ == "__main__":
                                                              "analysis at. Format is:"
                                                              "southgoing start distance,southgoing end distance, in m, "
                                                              "e.g. 0,1000")
+    parser.add_argument('--northgoing_reference_distance', type=str, help="Optional: distance along northgoing path to "
+                                                                          "make all time-distance data relative to for "
+                                                                          "each commute, in m, e.g. 5000m. Note: if "
+                                                                          "gates are applied, reference distance will "
+                                                                          "be shifted forward by the first gate "
+                                                                          "distance.")
+    parser.add_argument('--southgoing_reference_distance', type=str, help="Optional: distance along southgoing path to "
+                                                                          "make all time-distance data relative to for "
+                                                                          "each commute, in m, e.g. 5000m. Note: if "
+                                                                          "gates are applied, reference distance will "
+                                                                          "be shifted forward by the first gate "
+                                                                          "distance.")
     parser.add_argument('--accuracy', type=int, help="Optional: location accuracy value above which to discard data " +
                                                      "points. Default = 10 m")
     parser.add_argument('--threshold', type=int, help="Optional: distance of data point from path at which data point "
@@ -139,6 +152,8 @@ if __name__ == "__main__":
     file_dir = args.file_directory
     northgoing_gates = args.northgoing_gates
     southgoing_gates = args.southgoing_gates
+    northgoing_reference_distance = args.northgoing_reference_distance
+    southgoing_reference_distance = args.southgoing_reference_distance
     accuracy = args.accuracy
     threshold = args.threshold
 
@@ -158,9 +173,7 @@ if __name__ == "__main__":
 
     data_columns = ['time', 'X', 'Y', 'accuracy']
     dc_idx = [3, 0, 1, 7]  # indices of data columns in data files
-    northgoing_data_lists = [[] for i in range(len(data_columns))]
-    southgoing_data_lists = [[] for i in range(len(data_columns))]
-    data_lists = [northgoing_data_lists, southgoing_data_lists]
+    all_commute_data = [[], []]
 
     if not accuracy:  # If no accuracy is given, set to default 10 m
         accuracy = 10
@@ -169,7 +182,14 @@ if __name__ == "__main__":
 
     csv_files = glob.glob(file_dir + '*csv')
     for csv_file in csv_files:
+
+        # Prepare data lists for each csv file
+
         all_data_lists = [[] for i in range(len(data_columns))]
+        northgoing_data_lists = [[] for i in range(len(data_columns))]
+        southgoing_data_lists = [[] for i in range(len(data_columns))]
+        split_data_lists = [northgoing_data_lists, southgoing_data_lists]
+
         with open(csv_file, 'r') as openfile:
             rc = 0
             for row in openfile:
@@ -180,7 +200,7 @@ if __name__ == "__main__":
                     rc += 1
                     continue
                 elif rc == 1:
-                    reference_time = datetime.datetime.strptime(row.split(',')[3][:19], '%Y-%m-%dT%H:%M:%S')
+                    init_time = datetime.datetime.strptime(row.split(',')[3][:19], '%Y-%m-%dT%H:%M:%S')
                     rc += 1
 
                 # Extract data into data_lists
@@ -196,8 +216,8 @@ if __name__ == "__main__":
 
                 for n in range(len(data_columns)):
                     try:
-                        all_data_lists[n].append((datetime.datetime.strptime(cols[dc_idx[n]][:19], '%Y-%m-%dT%H:%M:%S') -
-                                                reference_time).total_seconds())
+                        all_data_lists[n].append((datetime.datetime.strptime(cols[dc_idx[n]][:19], '%Y-%m-%dT%H:%M:%S')
+                                                  - init_time).total_seconds())
                     except:
                         all_data_lists[n].append(float(cols[dc_idx[n]].replace("\"", "")))
 
@@ -206,79 +226,93 @@ if __name__ == "__main__":
         time_steps = []
         for i in range(1, len(all_data_lists[0])):
             time_steps.append(abs(all_data_lists[0][i - 1] - all_data_lists[0][i]))
-        if max(time_steps) > 3600:  # If there is a time step of over an hour, i.e. a work day
+        if max(time_steps) > 3600:  # If there is a time step of over an hour, i.e. data is over a work day (both ways)
             jump_time = all_data_lists[0][time_steps.index(max(time_steps))]
             for k in range(len(all_data_lists[0])):
                 if all_data_lists[0][k] <= jump_time:  # north-going is before the work day
                     m = 0
-                else:
+                else:  # otherwise south-going
                     m = 1
                 for n in range(len(data_columns)):
-                    data_lists[m][n].append(all_data_lists[n][k])
-        else:
+                    split_data_lists[m][n].append(all_data_lists[n][k])
+        else:  # otherwise if data is from before or after a work day only (one way)
             if all_data_lists[2][-1] - all_data_lists[2][0] > 0:  # north-going
                 m = 0
             else:  # otherwise south-going
                 m = 1
             for n in range(len(data_columns)):
-                data_lists[m][n].extend(all_data_lists[n])
+                split_data_lists[m][n].extend(all_data_lists[n])
+
+        # All split data into the overarching data lists (each commute has its own spot in the list)
+
+        if len(split_data_lists[0][0]) > 0:  # If data exists for the north-going commute
+            all_commute_data[0].append(split_data_lists[0])
+        elif len(split_data_lists[1][0]) > 0:  # If data exists for the south-going commute
+            all_commute_data[1].append(split_data_lists[1])
 
     # Calculate distances of each data point along the path
 
-    for m in range(len(data_lists)):
-        for n in range(len(data_lists[m][0])):
+    for m in range(len(all_commute_data)):  # m is counting which commute direction
+        for n in range(len(all_commute_data[m])):  # n is counting which exact commute
 
-            # First, find those vertices adjacent to the data point
+            # Every time a new commute is analysed, add its distance and time points under the commute direction
 
-            distance_sums = []
-            data_point = [data_lists[m][1][n], data_lists[m][2][n]]
-            for k in range(1, len(point_lists[m][0])):
-                vertex_points = [[point_lists[m][0][k - 1], point_lists[m][1][k - 1]],
-                                 [point_lists[m][0][k], point_lists[m][1][k]]]
+            distances[m].append([])
+            times[m].append([])
 
-                # Calculate the cumulative distance from the vertices to the data point
+            for l in range(len(all_commute_data[m][n][0])):  # l is counting data points in the commute
 
-                distance_sum = 0
-                for vertex_point in vertex_points:
-                    distance_sum += calc_distance(data_point, vertex_point)
+                # First, find those vertices in the commute path adjacent to the data point
 
-                # The distance sum will be smallest when the vertices surround the data point, so
-                # save all the distance sums, then find the minima to get those vertices about the data point
+                distance_sums = []
+                data_point = [all_commute_data[m][n][1][l], all_commute_data[m][n][2][l]]
+                for k in range(1, len(point_lists[m][0])):
+                    vertex_points = [[point_lists[m][0][k - 1], point_lists[m][1][k - 1]],
+                                     [point_lists[m][0][k], point_lists[m][1][k]]]
 
-                distance_sums.append(distance_sum)
+                    # Calculate the cumulative distance from the vertices to the data point
 
-            # Find the minimum distance sum, the adjacent vertices are those about that distance sum
+                    distance_sum = 0
+                    for vertex_point in vertex_points:
+                        distance_sum += calc_distance(data_point, vertex_point)
 
-            idx = distance_sums.index(min(distance_sums))
-            vertex_points = [[point_lists[m][0][idx - 1], point_lists[m][1][idx - 1]],
-                             [point_lists[m][0][idx], point_lists[m][1][idx]]]
+                    # The distance sum will be smallest when the vertices surround the data point, so
+                    # save all the distance sums, then find the minima to get those vertices about the data point
 
-            # Translate vertices and data point positions into vectors relative to the "behind" vertex
+                    distance_sums.append(distance_sum)
 
-            direction_vector = [vertex_points[1][0] - vertex_points[0][0],
-                                vertex_points[1][1] - vertex_points[0][1],
-                                0]
-            relative_data_point = [data_point[0] - vertex_points[0][0],
-                                   data_point[1] - vertex_points[0][1],
-                                   0]
+                # Find the minimum distance sum, the adjacent vertices are those about that distance sum
 
-            # Using vectors, calculate distance of the point along the path and from the path
+                idx = distance_sums.index(min(distance_sums))
+                vertex_points = [[point_lists[m][0][idx - 1], point_lists[m][1][idx - 1]],
+                                 [point_lists[m][0][idx], point_lists[m][1][idx]]]
 
-            try:
-                distance_on_line = dot_product(direction_vector, relative_data_point) / normalise(direction_vector)[1]
+                # Translate vertices and data point positions into vectors relative to the "behind" vertex
 
-                data_vertex_cross_product = cross_product(direction_vector, relative_data_point)
-                distance_from_line = ((data_vertex_cross_product[2] / abs(data_vertex_cross_product[2])) *
-                                      normalise(data_vertex_cross_product)[1] / normalise(direction_vector)[1])
+                direction_vector = [vertex_points[1][0] - vertex_points[0][0],
+                                    vertex_points[1][1] - vertex_points[0][1],
+                                    0]
+                relative_data_point = [data_point[0] - vertex_points[0][0],
+                                       data_point[1] - vertex_points[0][1],
+                                       0]
 
-            except:  # Fails if direction vector has length 0
-                pass
+                # Using vectors, calculate distance of the point along the path and from the path
 
-            # If the point is not too far from the line
+                try:
+                    distance_on_line = dot_product(direction_vector, relative_data_point) / normalise(direction_vector)[1]
 
-            if distance_from_line <= threshold:
-                times[m].append(data_lists[m][0][n])
-                distances[m].append(distance_lists[m][idx] + distance_on_line)
+                    data_vertex_cross_product = cross_product(direction_vector, relative_data_point)
+                    distance_from_line = ((data_vertex_cross_product[2] / abs(data_vertex_cross_product[2])) *
+                                          normalise(data_vertex_cross_product)[1] / normalise(direction_vector)[1])
+
+                except:  # Fails if direction vector has length 0
+                    pass
+
+                # If the point is not too far from the line
+
+                if distance_from_line <= threshold:
+                    times[m][n].append(all_commute_data[m][n][0][l])
+                    distances[m][n].append(distance_lists[m][idx] + distance_on_line)
 
     # Apply gates
 
@@ -294,29 +328,98 @@ if __name__ == "__main__":
         else:
             gates[1] = southgoing_gates.split(',')
 
+        # NOTE: there may be a bug in this section with the gates removing all data
+        # from a commute. So far I have only corrected for this in the shifting section of the code.
+
         gated_times = [[], []]
         gated_distances = [[], []]
         for m in range(len(times)):
-
-            gate_time = 0
             gate_start_distance = float(gates[m][0])
             gate_end_distance = float(gates[m][1])
             for n in range(len(times[m])):
-                gated_distance = distances[m][n] - gate_start_distance
-                if gated_distance < 0:  # Record the past time up until the gate distance is passed
-                    gate_time = times[m][n]
-                elif distances[m][n] <= gate_end_distance:
-                    # Once the gate distance is passed, save times relative to the last time pre-gate, unless
-                    # the end gate has been passed also
-                    gated_times[m].append(times[m][n] - gate_time)
-                    gated_distances[m].append(gated_distance)
+                gated_times[m].append([])
+                gated_distances[m].append([])
+                gate_time = 0
+                for l in range(len(times[m][n])):
+                    gated_distance = distances[m][n][l] - gate_start_distance
+                    if gated_distance < 0:  # Record the past time up until the gate distance is passed
+                        gate_time = times[m][n][l]
+                    elif distances[m][n][l] <= gate_end_distance:
+                        # Once the gate distance is passed, save times relative to the last time pre-gate, unless
+                        # the end gate has been passed also
+                        gated_times[m][n].append(times[m][n][l] - gate_time)
+                        gated_distances[m][n].append(gated_distance)
 
         times = gated_times
         distances = gated_distances
 
-    # Need to do something else with the data to get it in a format that can handle partial datasets
+    # Apply 1 m linear interpolation
+
+    print('Data has not been interpolated. Errors due to discrete nature of data may occur.')
+
+    # Apply reference distance
+
+    if northgoing_reference_distance or southgoing_reference_distance:
+        reference_distances = []
+        if not northgoing_reference_distance:
+            reference_distances.append(0)
+        else:
+            reference_distances.append(float(northgoing_reference_distance))
+
+        if not southgoing_reference_distance:
+            reference_distances.append(0)
+        else:
+            reference_distances[1].append(float(southgoing_reference_distance))
+
+        shifted_times = [[], []]
+        shifted_distances = [[], []]
+        for m in range(len(times)):
+            for n in range(len(times[m])):
+                shifted_times[m].append([])
+                shifted_distances[m].append([])
+
+                # Find the index of the distance closest to the reference distance
+                residual_distances = []
+                for l in range(len(distances[m][n])):
+                    residual_distances.append(abs(distances[m][n][l] - reference_distances[m]))
+
+                # Only add the commute to the shifted dataset if its closest point is within 100 m of
+                # the reference distance (and data exists (gating can remove all data))
+                if len(residual_distances) > 0:
+                    if min(residual_distances) < 100:
+                        reference_distance_idx = residual_distances.index(min(residual_distances))
+                    else:
+                        continue
+                else:
+                    continue
+
+                # Find the reference time for the current commute (time the commute passes the reference distance)
+                reference_time = times[m][n][reference_distance_idx]
+
+                # Shift the distance-time data relative to the reference distance-time data
+                for l in range(len(distances[m][n])):
+                    shifted_times[m][n].append(times[m][n][l] - reference_time)
+                    shifted_distances[m][n].append(distances[m][n][l] - reference_distances[m])
+
+        times = shifted_times
+        distances = shifted_distances
+
+    # Convert the data into time-velocity points using a central difference
+
+    velocities = [[], []]
+    for m in range(len(times)):
+        for n in range(len(times[m])):
+            velocities[m].append([])
+            for l in range(1, len(times[m][n]) - 1):
+                velocities[m][n].append((distances[m][n][l + 1] - distances[m][n][l - 1]) /
+                                        (times[m][n][l + 1] - times[m][n][l - 1]))
+            times[m][n] = times[m][n][1:-1]  # Cut the first and last data from times to make it comparable to
+            # velocities
+
+    # Plot data for inspection
 
     for m in range(len(times)):
-
-        plt.scatter(distances[m], times[m])
+        for n in range(len(times[m])):
+            plt.scatter(times[m][n], velocities[m][n], color='k')
         plt.show()
+
