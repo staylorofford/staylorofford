@@ -113,7 +113,7 @@ def get_origins(eventIDs):
 
         # Convert WGS84 site geographic coordinates to WGS84 geodetic coordinates
         x, y, _ = convert_wgs84_geo_geod(site_details.latitude, site_details.longitude, site_details.elevation)
-        network_data[-1] = [site, x, y, site_details.elevation]  # Keep z data relative to spheroid
+        network_data[-1] = [site, x / 1000, y / 1000, site_details.elevation / 1000]  # Keep z data relative to spheroid
 
     return all_event_origins, arrival_time_data_header, arrival_time_data, network_data
 
@@ -152,9 +152,9 @@ def calculate_tt(grid_point, site_location, velocity_model, phase):
 
         # Collapse the 3D positions of the two points into the plane containing both points and the vertical axis
         # with origin as the site location.
-        hpos = math.sqrt((site_location[0] - grid_point[0]) ** 2 +
-                         (site_location[1] - grid_point[1]) ** 2)
-        vpos = grid_point[2] - site_location[2]
+        hpos = math.sqrt((site_location[1] - grid_point[0]) ** 2 +
+                         (site_location[2] - grid_point[1]) ** 2)
+        vpos = grid_point[2] - site_location[3]
 
         # Trace the ray up through velocity layers until it reaches the depth of the site
         while True:
@@ -163,8 +163,8 @@ def calculate_tt(grid_point, site_location, velocity_model, phase):
             # If it is, set the vertical distance traveled in the layer as that between the grid point and the site,
             # otherwise, set the vertical distance traveled in the layer as that between the grid point and the
             # layer roof.
-            if velocity_model[n][0] < site_location[2]:
-                dz = vpos - site_location[2]
+            if velocity_model[n][0] < site_location[3]:
+                dz = vpos - site_location[3]
             else:
                 dz = vpos - velocity_model[n][0]
 
@@ -177,11 +177,16 @@ def calculate_tt(grid_point, site_location, velocity_model, phase):
             dh = dz / math.tan(math.radians(current_angle))
 
             # Adjust ray head position due to distance traversed
+            # hpos is causing residual error in tt calculation. Need to
+                # calculate bearing that ray travels along
+                # decompose dh in each ray shot into a dx and a dy
+                # alter the x and y of the ray head by dx and dy
+                # recalculate hpos from the updated x,y pos
             hpos -= dh
             vpos -= dz
 
             # Once the ray reaches the same depth as the site, save the horizontal position and travel time of the ray
-            if vpos - site_location[2] <= 0.01:
+            if vpos - site_location[3] <= 0.01:
 
                 # Once the ray hits the depth of the site, the ray tracing ends. The horizontal distance between
                 # the site location and the piercing point of the ray and the plane perpendicular to the vertical
@@ -207,7 +212,7 @@ def calculate_tt(grid_point, site_location, velocity_model, phase):
                 except ValueError:
                     print('ValueError! Is the start depth of your upper velocity inclusive of all the relative '
                           'locations of sites in your network? If not, the ray tracing will fail.')
-                    print(current_angle, n, vpos, site_location[2], velocity_model[n - 1][v_idx + 1],
+                    print(current_angle, n, vpos, site_location[3], velocity_model[n - 1][v_idx + 1],
                           velocity_model[n][v_idx + 1])
                     exit()
 
@@ -223,7 +228,6 @@ def generate_tt_grid(network_data, velocity_model, test_origins = None,
 
     """
     Generate travel times from each grid cell to each site in the network for the given velocity model.
-    All site locations are relative to the first site given in the network file.
     Default values are given for grid parameters in case test_origins argument is given.
     :param xmin: western distance (km) to extend grid to (-ve, or 0)
     :param xmax: eastern distance (km) to extend grid to (+ve, or 0)
@@ -253,27 +257,17 @@ def generate_tt_grid(network_data, velocity_model, test_origins = None,
             gridy.append(float(test_origins[n][1]))
             gridz.append(float(test_origins[n][2]))
 
-    # Define site positions in grid
-
-    site_grid_positions = []
-    for site in network_data:
-        site_grid_positions.append([])
-        site_grid_positions[-1].append(site[1] - network_data[0][1])
-        site_grid_positions[-1].append(site[2] - network_data[0][2])
-        site_grid_positions[-1].append(site[3] - network_data[0][3])
-
     # Define every point in the grid and generate travel times for each grid point to each station
     # and append these in order behind the corresponding grid point in the nested lists
-
     grid_points = [[[[] for z in gridz] for y in gridy] for x in gridx]
     for i in range(len(gridx)):
         for j in range(len(gridy)):
             for k in range(len(gridz)):
                 grid_points[i][j][k] = [gridx[i], gridy[j], gridz[k]]
-                for m in range(len(site_grid_positions)):
-                    grid_points[i][j][k].append(calculate_tt(grid_points[i][j][k], site_grid_positions[m],
+                for m in range(len(network_data)):
+                    grid_points[i][j][k].append(calculate_tt(grid_points[i][j][k], network_data[m],
                                                              velocity_model, phase='P'))
-                    grid_points[i][j][k].append(calculate_tt(grid_points[i][j][k], site_grid_positions[m],
+                    grid_points[i][j][k].append(calculate_tt(grid_points[i][j][k], network_data[m],
                                                              velocity_model, phase='S'))
 
     return grid_points
@@ -526,7 +520,7 @@ if __name__ == "__main__":
 
                     # Convert WGS84 geographic coordinates to WGS84 geodetic coordinates
                     x, y, _ = convert_wgs84_geo_geod(float(cols[1]), float(cols[2]), float(cols[3]))
-                    network_data[-1] = [cols[0], x, y, float(cols[3])]  # Keep z data relative to spheroid
+                    network_data[-1] = [cols[0], x / 1000, y / 1000, float(cols[3])]  # Keep z data relative to spheroid
 
     # If desired, parse the origins to test
     if args.test_origins:
@@ -538,7 +532,11 @@ if __name__ == "__main__":
                     header = 0
                 else:
                     cols = row[:-1].split(',')
-                    test_origins.append(cols)
+                    test_origins.append([])
+
+                    # Convert WGS84 geographic coordinates to WGS84 geodetic coordinates
+                    x, y, _ = convert_wgs84_geo_geod(float(cols[0]), float(cols[1]), float(cols[2]))
+                    test_origins[-1] = [x / 1000, y / 1000, float(cols[2]), cols[3]]
 
     # Build the velocity model lists from the velocity model file
     velocity_model = []
