@@ -139,10 +139,16 @@ def calculate_tt(grid_point, site_location, velocity_model, phase):
             if velocity_model[n][0] <= grid_point[2]:
                 nmax = n
 
+    # Find horizontal angle between grid point and station. Force this into the positive x and positive y right
+    # triangle. Appropriate signs for values are set elsewhere.
+    horangle = math.degrees(math.atan(abs(site_location[2] - grid_point[1]) / abs(site_location[1] - grid_point[0])))
+    hor_signs = [(site_location[1] - grid_point[0]) / abs(site_location[1] - grid_point[0]),
+                 (site_location[2] - grid_point[1]) / abs(site_location[2] - grid_point[1])]
+
     # Perform ray tracing to find the travel time between the grid point and site location for the first arriving ray
     horizontal_proximities = []
     travel_times = []
-    for psi in range(1, 180):
+    for psi in np.linspace(1, 180, 1800):
 
         # Initialise ray tracing parameters
         n = nmax
@@ -150,14 +156,21 @@ def calculate_tt(grid_point, site_location, velocity_model, phase):
         current_angle = psi
         v_idx = ['P', 'S'].index(phase)
 
-        # Collapse the 3D positions of the two points into the plane containing both points and the vertical axis
-        # with origin as the site location.
-        hpos = math.sqrt((site_location[1] - grid_point[0]) ** 2 +
-                         (site_location[2] - grid_point[1]) ** 2)
+        # Collapse the 3D positions of the two points into a) the plane containing both points and the vertical axis
+        # and b) the horizontal plane. In both cases the origin is the site location in the given plane.
+        hpos = [site_location[1] - grid_point[0], site_location[2] - grid_point[1]]
         vpos = grid_point[2] - site_location[3]
 
         # Trace the ray up through velocity layers until it reaches the depth of the site
         while True:
+
+            # print('n is ' + str(n))
+            # print('travel time is ' + str(travel_time))
+            # print('current angle is ' + str(current_angle))
+            # print('horizontal angle is ' + str(horangle))
+            # print('horizontal signs are ' + str(hor_signs[0]) + ', ' + str(hor_signs[1]))
+            # print('horizontal position is ' + str(hpos[0]) + ', ' + str(hpos[1]))
+            # print('vertical position is ' + str(vpos))
 
             # Find if the site is in the velocity layer containing the grid point
             # If it is, set the vertical distance traveled in the layer as that between the grid point and the site,
@@ -170,19 +183,22 @@ def calculate_tt(grid_point, site_location, velocity_model, phase):
 
             # Increase the travel time by the time taken for the ray to traverse the hypotenuse of the
             # triangle with acute angle psi and opposite dz
-
             travel_time += (dz / math.sin(math.radians(current_angle))) / velocity_model[n][v_idx + 1]
 
-            # Calculate horizontal distance traversed by ray over dz
+            # Calculate horizontal distance traversed by ray over dz.
+            # Positive dh means ray travelled in bearing direction,
+            # negative dh means ray travelled opposite to bearing direction.
             dh = dz / math.tan(math.radians(current_angle))
 
+            # print('Ray traversed dh ' + str(dh))
+            # print('Ray traversed dz ' + str(dz))
+
             # Adjust ray head position due to distance traversed
-            # hpos is causing residual error in tt calculation. Need to
-                # calculate bearing that ray travels along
-                # decompose dh in each ray shot into a dx and a dy
-                # alter the x and y of the ray head by dx and dy
-                # recalculate hpos from the updated x,y pos
-            hpos -= dh
+            # dz, dy will be of the opposite sign to x and y as they are "approaching" the origin
+            # as the ray travels. If dh is negative then dx and dy will be travelling away from the origin,
+            # i.e. in the direction of x,y from the origin.
+            hpos[0] += (-1 * hor_signs[0]) * math.sin(math.radians(horangle)) * dh
+            hpos[1] += (-1 * hor_signs[1]) * math.cos(math.radians(horangle)) * dh
             vpos -= dz
 
             # Once the ray reaches the same depth as the site, save the horizontal position and travel time of the ray
@@ -193,8 +209,12 @@ def calculate_tt(grid_point, site_location, velocity_model, phase):
                 # axis at the depth of the site indicates how close the ray comes to the site. The ray with the
                 # minimum horizontal distance will be the best solution to the ray tracing problem and its travel
                 # time is taken as the travel time of a ray from the grid point to the site.
-                horizontal_proximities.append(abs(hpos))
+                horizontal_proximities.append(math.sqrt(hpos[0] ** 2 + hpos[1] ** 2))
                 travel_times.append(travel_time)
+                # print('Ray reached site depth. Final horizontal position is ' + str(hpos[0]) + ', ' + str(hpos[1]))
+                # print('Final travel time is ' + str(travel_time))
+                # print('Horizontal proximity is ' + str(horizontal_proximities[-1]))
+                # print('')
                 break
 
             # If not, adjust current angle to that of the refracted ray in the new velocity layer
@@ -219,6 +239,11 @@ def calculate_tt(grid_point, site_location, velocity_model, phase):
     # The travel time between the grid point and the site is that of the ray which is closest to the site when it
     # reaches the depth of the site.
     travel_time = travel_times[horizontal_proximities.index(min(horizontal_proximities))]
+    print('Site is ' + str(site_location[0]))
+    print('Grid point is ' + str(grid_point[0]), ', ' + str(grid_point[1]) + ', ' + str(grid_point[2]))
+    print('Minimum travel time is ' + str(travel_time))
+    print('Corresponding horizontal proximity is ' + str(min(horizontal_proximities)))
+    print(' ')
 
     return travel_time
 
