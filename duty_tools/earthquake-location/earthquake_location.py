@@ -9,12 +9,13 @@ import datetime
 import io
 import math
 import numpy as np
-from obspy import read_inventory
 from obspy.clients.fdsn import Client as FDSN_Client
 from obspy.io.quakeml.core import Unpickler
 import pycurl
 import pyproj
 import xml.etree.ElementTree as ET
+
+print(datetime.datetime.now())
 
 # Set up objects to use imported modules
 quakeml_reader = Unpickler()
@@ -167,20 +168,28 @@ def get_origins(eventIDs):
 
     # Build network data using site list and FDSN
     network_data = []
+    sites = []
     for n in range(len(arrival_time_data_header)):
-        network_data.append([])
+
         # Get site name and details
         site = arrival_time_data_header[n].split('_')[0]
+
+        # Do not duplicate site details
+        if site in sites:
+            continue
+
+        network_data.append([])
         latitude, longitude, depth = FDSN_station_query(site)
 
         # Convert WGS84 site geographic coordinates to WGS84 geodetic coordinates
         x, y, _ = convert_wgs84_geo_geod(latitude, longitude, -1 * depth)
         network_data[-1] = [site, x / 1000, y / 1000, depth / 1000]
+        sites.append(site)
 
     return all_event_origins, arrival_time_data_header, arrival_time_data, network_data
 
 
-def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.01):
+def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.001):
 
     """
     Calculate the travel time of a seismic wave from a given grid point to a given site for a given 1D velocity model.
@@ -204,15 +213,15 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
 
     # Find horizontal angle between grid point and station. Force this into the positive x and positive y right
     # triangle. Appropriate signs for values are set elsewhere.
-    horangle = math.degrees(math.atan((grid_point[1] - site_location[2]) / (grid_point[0] - site_location[1])))
+    horangle = math.degrees(math.atan((grid_point[0] - site_location[1]) / (grid_point[1] - site_location[2])))
 
-    print('Site is ' + str(site_location[0]))
-    print('Site location is ' + str(site_location[1]), ', ' + str(site_location[2]) + ', ' + str(site_location[3]))
-    print('Grid point is ' + str(grid_point[0]), ', ' + str(grid_point[1]) + ', ' + str(grid_point[2]))
-    print('Direct angle is ' +
-          str(math.degrees(math.atan(abs(grid_point[2] - site_location[3]) /
-                                     math.sqrt((grid_point[0] - site_location[1]) ** 2 +
-                                               (grid_point[1] - site_location[2]) ** 2)))))
+    # print('Site is ' + str(site_location[0]))
+    # print('Site location is ' + str(site_location[1]), ', ' + str(site_location[2]) + ', ' + str(site_location[3]))
+    # print('Grid point is ' + str(grid_point[0]), ', ' + str(grid_point[1]) + ', ' + str(grid_point[2]))
+    # print('Direct angle is ' +
+    #       str(math.degrees(math.atan(abs(grid_point[2] - site_location[3]) /
+    #                                  math.sqrt((grid_point[0] - site_location[1]) ** 2 +
+    #                                            (grid_point[1] - site_location[2]) ** 2)))))
 
     # Set up angles to iterate
     start_angle = angle_step
@@ -238,12 +247,12 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
         # Trace the ray up through velocity layers until it reaches the depth of the site
         while True:
 
-            print('n is ' + str(n))
-            print('travel time is ' + str(travel_time))
-            print('current angle is ' + str(current_angle))
-            print('horizontal angle is ' + str(horangle))
-            print('horizontal position is ' + str(hpos[0]) + ', ' + str(hpos[1]))
-            print('vertical position is ' + str(vpos))
+            # print('n is ' + str(n))
+            # print('travel time is ' + str(travel_time))
+            # print('current angle is ' + str(current_angle))
+            # print('horizontal angle is ' + str(horangle))
+            # print('horizontal position is ' + str(hpos[0]) + ', ' + str(hpos[1]))
+            # print('vertical position is ' + str(vpos))
 
             # Find if the site is in the velocity layer containing the grid point
             # If it is, set the vertical distance traveled in the layer as that between the grid point and the site,
@@ -263,8 +272,8 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
             # negative dh means ray travelled opposite to bearing direction.
             dh = dz / math.tan(math.radians(current_angle))
 
-            print('Ray traversed dh ' + str(dh))
-            print('Ray traversed dz ' + str(dz))
+            # print('Ray traversed dh ' + str(dh))
+            # print('Ray traversed dz ' + str(dz))
 
             # Adjust ray head position due to distance traversed
             # dz, dy will be of the opposite sign to x and y as they are "approaching" the origin
@@ -273,7 +282,7 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
             hpos[0] += math.sin(math.radians(horangle)) * dh
             hpos[1] += math.cos(math.radians(horangle)) * dh
             vpos -= dz
-            print('vpos is now ' + str(vpos))
+            # print('vpos is now ' + str(vpos))
 
             # Once the ray reaches the same depth as the site, save the horizontal position and travel time of the ray
             if vpos <= 0.01:
@@ -285,11 +294,11 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
                 # time is taken as the travel time of a ray from the grid point to the site.
                 horizontal_proximities.append(math.sqrt(hpos[0] ** 2 + hpos[1] ** 2))
                 travel_times.append(travel_time)
-                print('Ray reached site depth. Final horizontal position is ' + str(hpos[0]) + ', ' + str(hpos[1]))
-                print('Final vertical position is ' + str(vpos))
-                print('Final travel time is ' + str(travel_time))
-                print('Horizontal proximity is ' + str(horizontal_proximities[-1]))
-                print('')
+                # print('Ray reached site depth. Final horizontal position is ' + str(hpos[0]) + ', ' + str(hpos[1]))
+                # print('Final vertical position is ' + str(vpos))
+                # print('Final travel time is ' + str(travel_time))
+                # print('Horizontal proximity is ' + str(horizontal_proximities[-1]))
+                # print('')
                 break
 
             # If not, adjust current angle to that of the refracted ray in the new velocity layer
@@ -312,14 +321,12 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
     # The travel time between the grid point and the site is that of the ray which is closest to the site when it
     # reaches the depth of the site.
     travel_time = travel_times[horizontal_proximities.index(min(horizontal_proximities))]
-    print('Site is ' + str(site_location[0]))
-    print('Phase is ' + str(phase))
-    print('Grid point is ' + str(grid_point[0]), ', ' + str(grid_point[1]) + ', ' + str(grid_point[2]))
-    print('Minimum travel time is ' + str(travel_time))
-    print('Corresponding horizontal proximity is ' + str(min(horizontal_proximities)))
-    print(' ')
-
-    exit()
+    # print('Site is ' + str(site_location[0]))
+    # print('Phase is ' + str(phase))
+    # print('Grid point is ' + str(grid_point[0]), ', ' + str(grid_point[1]) + ', ' + str(grid_point[2]))
+    # print('Minimum travel time is ' + str(travel_time))
+    # print('Corresponding horizontal proximity is ' + str(min(horizontal_proximities)))
+    # print(' ')
 
     return travel_time
 
@@ -387,31 +394,36 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
 
     # Create a translation chart to find travel time data for a given column in the arrival time data.
 
-    print('Generating translation chart...')
+    # print('Generating translation chart...')
 
     translation_chart = []
+    # print('Arrival time data headers are: ')
+    # print(arrival_time_data_header)
+    # print('Grid headers are: ')
+    # print(grid_header)
     for m in range(len(arrival_time_data_header)):
-        print('Arrival time data header is: ')
-        print(arrival_time_data_header[m])
+        # print('Arrival time data header is: ')
+        # print(arrival_time_data_header[m])
         for n in range(len(grid_header)):
-            print('Grid header is:')
-            print(grid_header[n])
+            # print('Grid header is:')
+            # print(grid_header[n])
             if n < 3:
                 continue
             if ((arrival_time_data_header[m].split('_')[0] == grid_header[n].split('_')[1]) and
                     arrival_time_data_header[m].split('_')[1] == str.upper(grid_header[n][:1])):  # site and wave match
-                print('Headers match, appending ' + str(m) + '->' + str(n) + ' to translation chart')
+                # print('Headers match, appending ' + str(m) + '->' + str(n) + ' to translation chart')
                 translation_chart.append(n)
+                break
 
-    print('Translation chart completed.\n')
+    # print('Translation chart completed.\n')
 
     # Locate all events (only location method currently available is grid search)
 
-    print('Locating events...')
+    # print('Locating events...')
 
     event_solutions = [[], [], [], [], [], [], [], [], []]
     for m in range(len(arrival_time_data)):
-        print('Event number is ' + str(m))
+        # print('Event number is ' + str(m))
         origin_grid = [[[[] for z in range(len(grid_points[0][0]))]
                         for y in range(len(grid_points[0]))]
                        for x in range(len(grid_points))]
@@ -427,17 +439,17 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
                     max_weight = 0
                     weight_sum = 0
                     for n in range(len(arrival_time_data[m])):
-                        print('Data is ' + arrival_time_data_header[n])
-                        print('Arrival time is ' + str(arrival_time_data[m][n]))
-                        print('Grid point is for: ' + grid_header[translation_chart[n]])
-                        print('Grid point is: ')
-                        print(grid_points[i][j][k])
+                        # print('Data is ' + arrival_time_data_header[n])
+                        # print('Arrival time is ' + str(arrival_time_data[m][n]))
+                        # print('Grid point is for: ' + grid_header[translation_chart[n]])
+                        # print('Grid point is: ')
+                        # print(grid_points[i][j][k][:3])
                         if isinstance(arrival_time_data[m][n], datetime.datetime):
                             origin_times.append(arrival_time_data[m][n] -
                                                 datetime.timedelta(seconds=grid_points[i][j][k][translation_chart[n]])
                                                 )
-                            print('Arrival time is real. Origin time is: ')
-                            print(origin_times[-1])
+                            # print('Arrival time is real. Origin time is: ')
+                            # print(origin_times[-1])
 
                     # Calculate mean origin time
                     ot_diffs = []
@@ -758,27 +770,31 @@ if __name__ == "__main__":
                                        test_origins=test_origins)
 
         grid_header = 'x,y,z,'
+        # print('network data is: ')
+        # print(network_data)
         for n in range(len(network_data)):
             grid_header += 'ptt_' + network_data[n][0] + ',stt_' + network_data[n][0] + ','
         grid_header = grid_header[:-1].split(',')
 
-    print('The grid is: ')
-    for n in range(len(grid_points)):
-        print(grid_points[n])
-    print('\n')
+    # print('The grid is: ')
+    # for n in range(len(grid_points)):
+    #     print(grid_points[n])
+    # print('\n')
 
     # Perform earthquake location
     method = args.method
     if method == 'grid_search':
         if args.test_origins:
             for n in range(len(test_origins)):
-                print('The current test origin is ' + str(test_origins[0]) + ', ' + str(test_origins[1]) + ', ' + str(test_origins[2]))
+                print('The current test origin is ' + str(test_origins[n][0]) + ', ' + str(test_origins[n][1]) + ', ' + str(test_origins[n][2]))
                 earthquake_origins = grid_search([arrival_time_data[n]],
                                                  arrival_time_data_header,
                                                  [[[grid_points[n][n][n]]]],
                                                  grid_header)
 
                 # Calculate RMS error as the time difference between the test origin time and that from the grid search
-                rms = (datetime.datetime.strptime(test_origins[n][3],
-                                                  '%Y-%m-%dT%H:%M:%SZ') - earthquake_origins[3][0]).total_seconds()
+                rms = abs(datetime.datetime.strptime(test_origins[n][3],
+                                                     '%Y-%m-%dT%H:%M:%SZ') - earthquake_origins[3][0]).total_seconds()
                 print(earthquake_origins, rms)
+
+    print(datetime.datetime.now())
