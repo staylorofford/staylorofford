@@ -42,7 +42,7 @@ def parse_path(path_file, path_columns):
     return vertex_list
 
 
-def distance(p1, p2):
+def calc_distance(p1, p2):
 
     """
 
@@ -101,7 +101,7 @@ if __name__ == "__main__":
         # Find line segment end points for the path
         for n in range(len(vertex_lists[m])):
             for k in range(len(vertex_lists[m])):
-                if n != k and distance(vertex_lists[m][n][:-1], vertex_lists[m][k][:-1]) == 0:
+                if n != k and calc_distance(vertex_lists[m][n][:-1], vertex_lists[m][k][:-1]) == 0:
                     end_points.append(vertex_lists[m][n][:-1])
                     end_point_indices.append(n)
 
@@ -237,7 +237,7 @@ if __name__ == "__main__":
         line_lengths = [0]
         distances = [0]
         for n in range(1, len(path_points)):
-            line_lengths.append(distance(path_points[n - 1], path_points[n]))
+            line_lengths.append(calc_distance(path_points[n - 1], path_points[n]))
             distances.append(int(sum(line_lengths)))
 
         # Write the path and distances to file
