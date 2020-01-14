@@ -129,6 +129,7 @@ def get_origins(eventIDs):
                         arrival_data[0].append(picks[n].waveform_id['station_code'])
                         arrival_data[1].append(arrivals[m].phase)
                         arrival_data[2].append(picks[n].time)
+                        break
 
         # Build arrival time data header for the event
         event_ATDH = []
@@ -189,7 +190,7 @@ def get_origins(eventIDs):
     return all_event_origins, arrival_time_data_header, arrival_time_data, network_data
 
 
-def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.001):
+def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.1):
 
     """
     Calculate the travel time of a seismic wave from a given grid point to a given site for a given 1D velocity model.
@@ -450,6 +451,7 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
                                                 )
                             # print('Arrival time is real. Origin time is: ')
                             # print(origin_times[-1])
+                    origin_times.sort()
 
                     # Calculate mean origin time
                     ot_diffs = []
@@ -464,10 +466,7 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
                     rms = math.sqrt(rms)
 
                     # Calculate weight, maximum weight, sum of weights for confidence interval determination
-                    try:
-                        weight = 1 / (rms ** 2)
-                    except:
-                        weight = math.inf  # Catch zero division in the case of 0 RMS error
+                    weight = 1 / (rms ** 2)
                     if weight > max_weight:
                         max_weight = weight
                     weight_sum += weight
@@ -600,8 +599,7 @@ if __name__ == "__main__":
     parser.add_argument('--grid-file', type=str, help='File saved by this script after travel time grid generation. '
                                                       'Giving this argument will disable travel time grid generation and'
                                                       'the travel time grid given in the file will be used.')
-    parser.add_argument('--method', type=str, help='Earthquake location method to use, options are: grid_search,'
-                                                   'RVT_semblance')
+    parser.add_argument('--method', type=str, help='Earthquake location method to use, options are: grid_search.')
     args = parser.parse_args()
 
     # Parse files
@@ -656,19 +654,24 @@ if __name__ == "__main__":
 
     # If desired, parse the origins to test
     if args.test_origins:
-        test_origins = []
-        with open(args.test_origins, 'r') as openfile:
-            header = -1
-            for row in openfile:
-                if header == -1:
-                    header = 0
-                else:
-                    cols = row[:-1].split(',')
-                    test_origins.append([])
-
-                    # Convert WGS84 geographic coordinates to WGS84 geodetic coordinates
-                    x, y, _ = convert_wgs84_geo_geod(float(cols[0]), float(cols[1]), -1 * float(cols[2]))
-                    test_origins[-1] = [x / 1000, y / 1000, float(cols[2]) / 1000, cols[3]]
+        # test_origins = []
+        # with open(args.test_origins, 'r') as openfile:
+        #     header = -1
+        #     for row in openfile:
+        #         if header == -1:
+        #             header = 0
+        #         else:
+        #             cols = row[:-1].split(',')
+        #             test_origins.append([])
+        #
+        #             # Convert WGS84 geographic coordinates to WGS84 geodetic coordinates
+        #             x, y, _ = convert_wgs84_geo_geod(float(cols[0]), float(cols[1]), -1 * float(cols[2]))
+        #             test_origins[-1] = [x / 1000, y / 1000, float(cols[2]) / 1000, cols[3]]
+        for n in range(len(all_event_origins)):
+            x, y, _ = convert_wgs84_geo_geod(all_event_origins[n][0], all_event_origins[n][1],
+                                                                 -1 * all_event_origins[n][2])
+            all_event_origins[n] = [x / 1000, y / 1000, all_event_origins[n][2] / 1000, str(all_event_origins[n][3])]
+        test_origins = all_event_origins
 
     # Build the velocity model lists from the velocity model file
     velocity_model = []
@@ -793,8 +796,10 @@ if __name__ == "__main__":
                                                  grid_header)
 
                 # Calculate RMS error as the time difference between the test origin time and that from the grid search
-                rms = abs(datetime.datetime.strptime(test_origins[n][3],
-                                                     '%Y-%m-%dT%H:%M:%SZ') - earthquake_origins[3][0]).total_seconds()
+                print(test_origins[n])
+                # print(all_event_origins[n])
+                rms = abs((datetime.datetime.strptime(test_origins[n][3],
+                                                      '%Y-%m-%dT%H:%M:%S.%fZ') - earthquake_origins[3][0]).total_seconds())
                 print(earthquake_origins, rms)
 
     print(datetime.datetime.now())
