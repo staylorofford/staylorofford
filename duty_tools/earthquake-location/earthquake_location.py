@@ -10,6 +10,7 @@ import io
 import math
 import numpy as np
 from obspy.clients.fdsn import Client as FDSN_Client
+from obspy.taup import TauPyModel
 from obspy.io.quakeml.core import Unpickler
 import pycurl
 import pyproj
@@ -18,8 +19,9 @@ import xml.etree.ElementTree as ET
 print(datetime.datetime.now())
 
 # Set up objects to use imported modules
+client = FDSN_Client("https://service.geonet.org.nz")
+spherical_velocity_model = TauPyModel(model="iasp91")
 quakeml_reader = Unpickler()
-client = FDSN_Client('https://service.geonet.org.nz')
 
 # Set up pyproj coordinate system objects
 proj_wgs84_geog = pyproj.Proj(init="epsg:4326")
@@ -184,7 +186,8 @@ def get_origins(eventIDs):
 
         # Convert WGS84 site geographic coordinates to WGS84 geodetic coordinates
         x, y, _ = convert_wgs84_geo_geod(latitude, longitude, -1 * depth)
-        network_data[-1] = [site, x / 1000, y / 1000, depth / 1000]
+        network_data[-1] = [site, x / 1000, y / 1000, depth / 1000,
+                            latitude, longitude]
         sites.append(site)
 
     return all_event_origins, arrival_time_data_header, arrival_time_data, network_data
@@ -195,6 +198,9 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
     """
     Calculate the travel time of a seismic wave from a given grid point to a given site for a given 1D velocity model.
     Assumes ray travels in the plane containing the grid point, site, and the vertical axis.
+    Note: this calculation is only valid when grid points and sites are spatially close, i.e.
+    when the Earth-radial (vertical) direction is parallel for all grid points and sites. When this is not
+    true, the spherical mode should be used with the script.
     :param grid_point: x,y,z position of a point in the grid
     :param site_location: x,y,z position of a site in the grid
     :param velocity_model: velocity model as parsed from velocity file
@@ -215,14 +221,6 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
     # Find horizontal angle between grid point and station. Force this into the positive x and positive y right
     # triangle. Appropriate signs for values are set elsewhere.
     horangle = math.degrees(math.atan((grid_point[0] - site_location[1]) / (grid_point[1] - site_location[2])))
-
-    # print('Site is ' + str(site_location[0]))
-    # print('Site location is ' + str(site_location[1]), ', ' + str(site_location[2]) + ', ' + str(site_location[3]))
-    # print('Grid point is ' + str(grid_point[0]), ', ' + str(grid_point[1]) + ', ' + str(grid_point[2]))
-    # print('Direct angle is ' +
-    #       str(math.degrees(math.atan(abs(grid_point[2] - site_location[3]) /
-    #                                  math.sqrt((grid_point[0] - site_location[1]) ** 2 +
-    #                                            (grid_point[1] - site_location[2]) ** 2)))))
 
     # Set up angles to iterate
     start_angle = angle_step
@@ -248,13 +246,6 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
         # Trace the ray up through velocity layers until it reaches the depth of the site
         while True:
 
-            # print('n is ' + str(n))
-            # print('travel time is ' + str(travel_time))
-            # print('current angle is ' + str(current_angle))
-            # print('horizontal angle is ' + str(horangle))
-            # print('horizontal position is ' + str(hpos[0]) + ', ' + str(hpos[1]))
-            # print('vertical position is ' + str(vpos))
-
             # Find if the site is in the velocity layer containing the grid point
             # If it is, set the vertical distance traveled in the layer as that between the grid point and the site,
             # otherwise, set the vertical distance traveled in the layer as that between the grid point and the
@@ -273,9 +264,6 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
             # negative dh means ray travelled opposite to bearing direction.
             dh = dz / math.tan(math.radians(current_angle))
 
-            # print('Ray traversed dh ' + str(dh))
-            # print('Ray traversed dz ' + str(dz))
-
             # Adjust ray head position due to distance traversed
             # dz, dy will be of the opposite sign to x and y as they are "approaching" the origin
             # as the ray travels. If dh is negative then dx and dy will be travelling away from the origin,
@@ -283,7 +271,6 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
             hpos[0] += math.sin(math.radians(horangle)) * dh
             hpos[1] += math.cos(math.radians(horangle)) * dh
             vpos -= dz
-            # print('vpos is now ' + str(vpos))
 
             # Once the ray reaches the same depth as the site, save the horizontal position and travel time of the ray
             if vpos <= 0.01:
@@ -295,11 +282,6 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
                 # time is taken as the travel time of a ray from the grid point to the site.
                 horizontal_proximities.append(math.sqrt(hpos[0] ** 2 + hpos[1] ** 2))
                 travel_times.append(travel_time)
-                # print('Ray reached site depth. Final horizontal position is ' + str(hpos[0]) + ', ' + str(hpos[1]))
-                # print('Final vertical position is ' + str(vpos))
-                # print('Final travel time is ' + str(travel_time))
-                # print('Horizontal proximity is ' + str(horizontal_proximities[-1]))
-                # print('')
                 break
 
             # If not, adjust current angle to that of the refracted ray in the new velocity layer
@@ -322,17 +304,11 @@ def calculate_tt(grid_point, site_location, velocity_model, phase, angle_step=0.
     # The travel time between the grid point and the site is that of the ray which is closest to the site when it
     # reaches the depth of the site.
     travel_time = travel_times[horizontal_proximities.index(min(horizontal_proximities))]
-    # print('Site is ' + str(site_location[0]))
-    # print('Phase is ' + str(phase))
-    # print('Grid point is ' + str(grid_point[0]), ', ' + str(grid_point[1]) + ', ' + str(grid_point[2]))
-    # print('Minimum travel time is ' + str(travel_time))
-    # print('Corresponding horizontal proximity is ' + str(min(horizontal_proximities)))
-    # print(' ')
 
     return travel_time
 
 
-def generate_tt_grid(network_data, velocity_model, test_origins = None,
+def generate_tt_grid(network_data, velocity_model, mode, test_origins = None,
                      xmin=-1, xmax=1, ymin=-1, ymax=1, zmin=-1, zmax=1, xstep=1, ystep=1, zstep=1):
 
     """
@@ -349,6 +325,10 @@ def generate_tt_grid(network_data, velocity_model, test_origins = None,
     :param zstep: distance between grid points in z direction (km)
     :param network_data: network model as parsed from network file
     :param velocity_model: velocity model as parsed from velocity file
+    :param mode: whether to calculate travel times in a "flat" mode or in a "spherical" mode.
+                 The "flat" mode calculates travel times using ray tracing in a cartesian coordinate system
+                 where the Earth-radial (vertical) direction is parallel for all grid points and sites.
+                 The "spherical" mode references IASPEI91 travel times from the obspy.taup module.
     :param test_origins: test origins locations as parsed from the test origins file. Note, if this argument is
                          given then the travel time grid will only contain travel times from the test origins.
     :return: grid points and travel times in a nested list
@@ -362,22 +342,66 @@ def generate_tt_grid(network_data, velocity_model, test_origins = None,
     else:
         gridx, gridy, gridz = [], [], []
         for n in range(len(test_origins)):
-            gridx.append(float(test_origins[n][0]))
-            gridy.append(float(test_origins[n][1]))
-            gridz.append(float(test_origins[n][2]))
+            if mode == 'flat':
+                gridx.append(float(test_origins[n][1]))
+                gridy.append(float(test_origins[n][2]))
+            elif mode == 'spherical':
+                gridx.append(float(test_origins[n][-2]))
+                gridy.append(float(test_origins[n][-1]))
+            gridz.append(float(test_origins[n][3]))
 
     # Define every point in the grid and generate travel times for each grid point to each station
     # and append these in order behind the corresponding grid point in the nested lists
     grid_points = [[[[] for z in gridz] for y in gridy] for x in gridx]
     for i in range(len(gridx)):
         for j in range(len(gridy)):
+            if test_origins and i != j:
+                continue
             for k in range(len(gridz)):
+                if test_origins and j != k:
+                        continue
                 grid_points[i][j][k] = [gridx[i], gridy[j], gridz[k]]
                 for m in range(len(network_data)):
-                    grid_points[i][j][k].append(calculate_tt(grid_points[i][j][k], network_data[m],
-                                                             velocity_model, phase='P'))
-                    grid_points[i][j][k].append(calculate_tt(grid_points[i][j][k], network_data[m],
-                                                             velocity_model, phase='S'))
+                    if mode == 'flat':
+                        grid_points[i][j][k].append(calculate_tt(grid_points[i][j][k], network_data[m],
+                                                                 velocity_model, phase='P'))
+                        grid_points[i][j][k].append(calculate_tt(grid_points[i][j][k], network_data[m],
+                                                                 velocity_model, phase='S'))
+                    elif mode == 'spherical':
+                        # Find angle between grid point and site
+                        delta = math.degrees(2 *
+                                             (math.asin(((math.sin(1/2 *
+                                                                   math.radians(abs(grid_points[i][j][k][0] -
+                                                                                    network_data[m][-2])))) ** 2 +
+                                                         math.cos(math.radians(grid_points[i][j][k][0])) *
+                                                         math.cos(math.radians(network_data[m][-2])) *
+                                                         (math.sin(1/2 * math.radians(abs(grid_points[i][j][k][1] -
+                                                                                          network_data[m][-1])))) **
+                                                         2) ** (1/2))))
+
+                        # Set receiver depth to 0 if it is negative; function does not allow depth below 0.
+                        # However, increase source depth by receiver height to try reduce error due to this.
+                        if network_data[m][3] < 0:
+                            receiver_depth = 0
+                            source_depth = grid_points[i][j][k][2] - network_data[m][3]
+                        else:
+                            receiver_depth = network_data[m][3]
+                            source_depth = grid_points[i][j][k][2]
+
+                        # Calculate travel times for common phases
+                        arrivals = spherical_velocity_model.get_travel_times(source_depth_in_km=source_depth,
+                                                                             receiver_depth_in_km=receiver_depth,
+                                                                             distance_in_degree=delta,
+                                                                             phase_list=['p', 'P', 's', 'S'])
+                        for arrival in arrivals:
+                            if arrival.name == 'p' or arrival.name == 'P':
+                                p_tt = arrival.time
+                                break
+                        for arrival in arrivals:
+                            if arrival.name == 's' or arrival.name == 'S':
+                                s_tt = arrival.time
+                                break
+                        grid_points[i][j][k].extend([p_tt, s_tt])
 
     return grid_points
 
@@ -394,37 +418,19 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
     """
 
     # Create a translation chart to find travel time data for a given column in the arrival time data.
-
-    # print('Generating translation chart...')
-
     translation_chart = []
-    # print('Arrival time data headers are: ')
-    # print(arrival_time_data_header)
-    # print('Grid headers are: ')
-    # print(grid_header)
     for m in range(len(arrival_time_data_header)):
-        # print('Arrival time data header is: ')
-        # print(arrival_time_data_header[m])
         for n in range(len(grid_header)):
-            # print('Grid header is:')
-            # print(grid_header[n])
             if n < 3:
                 continue
             if ((arrival_time_data_header[m].split('_')[0] == grid_header[n].split('_')[1]) and
                     arrival_time_data_header[m].split('_')[1] == str.upper(grid_header[n][:1])):  # site and wave match
-                # print('Headers match, appending ' + str(m) + '->' + str(n) + ' to translation chart')
                 translation_chart.append(n)
                 break
 
-    # print('Translation chart completed.\n')
-
     # Locate all events (only location method currently available is grid search)
-
-    # print('Locating events...')
-
     event_solutions = [[], [], [], [], [], [], [], [], []]
     for m in range(len(arrival_time_data)):
-        # print('Event number is ' + str(m))
         origin_grid = [[[[] for z in range(len(grid_points[0][0]))]
                         for y in range(len(grid_points[0]))]
                        for x in range(len(grid_points))]
@@ -440,17 +446,10 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
                     max_weight = 0
                     weight_sum = 0
                     for n in range(len(arrival_time_data[m])):
-                        # print('Data is ' + arrival_time_data_header[n])
-                        # print('Arrival time is ' + str(arrival_time_data[m][n]))
-                        # print('Grid point is for: ' + grid_header[translation_chart[n]])
-                        # print('Grid point is: ')
-                        # print(grid_points[i][j][k][:3])
                         if isinstance(arrival_time_data[m][n], datetime.datetime):
                             origin_times.append(arrival_time_data[m][n] -
                                                 datetime.timedelta(seconds=grid_points[i][j][k][translation_chart[n]])
                                                 )
-                            # print('Arrival time is real. Origin time is: ')
-                            # print(origin_times[-1])
                     origin_times.sort()
 
                     # Calculate mean origin time
@@ -599,6 +598,7 @@ if __name__ == "__main__":
     parser.add_argument('--grid-file', type=str, help='File saved by this script after travel time grid generation. '
                                                       'Giving this argument will disable travel time grid generation and'
                                                       'the travel time grid given in the file will be used.')
+    parser.add_argument('--mode', type=str, help='Which mode to use in travel time calculation: flat or spherical.')
     parser.add_argument('--method', type=str, help='Earthquake location method to use, options are: grid_search.')
     args = parser.parse_args()
 
@@ -650,7 +650,8 @@ if __name__ == "__main__":
 
                     # Convert WGS84 geographic coordinates to WGS84 geodetic coordinates
                     x, y, _ = convert_wgs84_geo_geod(float(cols[1]), float(cols[2]), float(cols[3]))
-                    network_data[-1] = [cols[0], x / 1000, y / 1000, -1 * float(cols[3]) / 1000]
+                    network_data[-1] = [cols[0], x / 1000, y / 1000, -1 * float(cols[3]) / 1000,
+                                        float(cols[1]), float(cols[2])]
 
     # If desired, parse the origins to test
     if args.test_origins:
@@ -666,25 +667,31 @@ if __name__ == "__main__":
         #
         #             # Convert WGS84 geographic coordinates to WGS84 geodetic coordinates
         #             x, y, _ = convert_wgs84_geo_geod(float(cols[0]), float(cols[1]), -1 * float(cols[2]))
-        #             test_origins[-1] = [x / 1000, y / 1000, float(cols[2]) / 1000, cols[3]]
+        #             test_origins[-1] = [cols[3], x / 1000, y / 1000, float(cols[2]) / 1000,
+        #                                 float(cols[0]), float(cols[1])]
         for n in range(len(all_event_origins)):
             x, y, _ = convert_wgs84_geo_geod(all_event_origins[n][0], all_event_origins[n][1],
                                                                  -1 * all_event_origins[n][2])
-            all_event_origins[n] = [x / 1000, y / 1000, all_event_origins[n][2] / 1000, str(all_event_origins[n][3])]
+            all_event_origins[n] = [str(all_event_origins[n][3]), x / 1000, y / 1000, all_event_origins[n][2] / 1000,
+                                    all_event_origins[n][0], all_event_origins[n][1]]
         test_origins = all_event_origins
 
     # Build the velocity model lists from the velocity model file
-    velocity_model = []
-    with open(args.velocity_model, 'r') as openfile:
-        header = -1
-        for row in openfile:
-            if header == -1:
-                header = 0
-            else:
-                cols = row[:-1].split(',')
-                velocity_model.append([])
-                for col in cols:
-                    velocity_model[-1].append(float(col))
+    if args.mode != 'spherical':
+        velocity_model = []
+        with open(args.velocity_model, 'r') as openfile:
+            header = -1
+            for row in openfile:
+                if header == -1:
+                    header = 0
+                else:
+                    cols = row[:-1].split(',')
+                    velocity_model.append([])
+                    for col in cols:
+                        velocity_model[-1].append(float(col))
+    else:
+        velocity_model = None  # A velocity model is not required for spherical travel time calculation,
+        # as this uses IASPEI 91.
 
     # If no grid file is given, calculate the travel time grid from grid parameters
     if not args.grid_file and not args.test_origins:
@@ -704,6 +711,7 @@ if __name__ == "__main__":
         # Build travel time grid
         grid_points = generate_tt_grid(network_data,
                                        velocity_model,
+                                       args.mode,
                                        xmin=xmin,
                                        xmax=xmax,
                                        ymin=ymin,
@@ -770,26 +778,21 @@ if __name__ == "__main__":
     else:
         grid_points = generate_tt_grid(network_data,
                                        velocity_model,
+                                       args.mode,
                                        test_origins=test_origins)
 
         grid_header = 'x,y,z,'
-        # print('network data is: ')
-        # print(network_data)
         for n in range(len(network_data)):
             grid_header += 'ptt_' + network_data[n][0] + ',stt_' + network_data[n][0] + ','
         grid_header = grid_header[:-1].split(',')
-
-    # print('The grid is: ')
-    # for n in range(len(grid_points)):
-    #     print(grid_points[n])
-    # print('\n')
 
     # Perform earthquake location
     method = args.method
     if method == 'grid_search':
         if args.test_origins:
             for n in range(len(test_origins)):
-                print('The current test origin is ' + str(test_origins[n][0]) + ', ' + str(test_origins[n][1]) + ', ' + str(test_origins[n][2]))
+                print('The current test origin is ' + str(test_origins[n][1]) + ', ' + str(test_origins[n][2]) +
+                      ', ' + str(test_origins[n][3]))
                 earthquake_origins = grid_search([arrival_time_data[n]],
                                                  arrival_time_data_header,
                                                  [[[grid_points[n][n][n]]]],
@@ -797,8 +800,7 @@ if __name__ == "__main__":
 
                 # Calculate RMS error as the time difference between the test origin time and that from the grid search
                 print(test_origins[n])
-                # print(all_event_origins[n])
-                rms = abs((datetime.datetime.strptime(test_origins[n][3],
+                rms = abs((datetime.datetime.strptime(test_origins[n][0],
                                                       '%Y-%m-%dT%H:%M:%S.%fZ') - earthquake_origins[3][0]).total_seconds())
                 print(earthquake_origins, rms)
 
