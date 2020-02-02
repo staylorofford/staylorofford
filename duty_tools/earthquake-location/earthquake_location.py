@@ -16,8 +16,6 @@ import pycurl
 import pyproj
 import xml.etree.ElementTree as ET
 
-print(datetime.datetime.now())
-
 # Set up objects to use imported modules
 client = FDSN_Client("https://service.geonet.org.nz")
 spherical_velocity_model = TauPyModel(model="iasp91")
@@ -26,6 +24,206 @@ quakeml_reader = Unpickler()
 # Set up pyproj coordinate system objects
 proj_wgs84_geog = pyproj.Proj(init="epsg:4326")
 proj_wgs84_geod = pyproj.Proj(init="epsg:4978")
+
+
+def parse_files(arrival_time_file=None,
+                eventid_file=None,
+                test_origins=None,
+                network_file=None,
+                velocity_model=None,
+                grid_parameters=None,
+                grid_file=None,
+                mode=None):
+
+    """
+    Parse parameters from files as described in the main execution of this code.
+    """
+
+    # If a file of eventIDs was given
+    if eventid_file:
+
+        # Build the list of eventIDs
+        eventIDs = []
+        with open(eventid_file, 'r') as openfile:
+            header = -1
+            for row in openfile:
+                if header == -1:
+                    header = 0
+                else:
+                    eventIDs.append(row[:-1])
+
+        # Build the arrival time and network data lists using FDSN queries and the eventIDs
+        all_event_origins, arrival_time_data_header, arrival_time_data, network_data = get_origins(eventIDs)
+
+    # Otherwise, generate the arrival time and network data lists from the respective files
+    else:
+        arrival_time_data = []
+        with open(arrival_time_file, 'r') as openfile:
+            header = -1
+            for row in openfile:
+                if header == -1:
+                    header = 0
+                    arrival_time_data_header = row[:-1].split(',')
+                else:
+                    cols = row[:-1].split(',')
+                    arrival_time_data.append([])
+                    for col in cols[1:]:
+                        if int(col[:4]) < 1900:
+                            arrival_time_data[-1].append(float('nan'))
+                        else:
+                            arrival_time_data[-1].append(datetime.datetime.strptime(col, '%Y-%m-%d %H:%M:%S'))
+
+        network_data = []
+        with open(network_file, 'r') as openfile:
+            header = -1
+            for row in openfile:
+                if header == -1:
+                    header = 0
+                else:
+                    cols = row[:-1].split(',')
+                    network_data.append([])
+
+                    # Convert WGS84 geographic coordinates to WGS84 geodetic coordinates
+                    x, y, _ = convert_wgs84_geo_geod(float(cols[1]), float(cols[2]), float(cols[3]))
+                    network_data[-1] = [cols[0], x / 1000, y / 1000, -1 * float(cols[3]) / 1000,
+                                        float(cols[1]), float(cols[2])]
+
+    # If desired, parse the origins to test
+    if test_origins:
+        with open(test_origins, 'r') as openfile:
+            test_origins = []
+            header = -1
+            for row in openfile:
+                if header == -1:
+                    header = 0
+                else:
+                    cols = row[:-1].split(',')
+                    test_origins.append([])
+
+                    # Convert WGS84 geographic coordinates to WGS84 geodetic coordinates
+                    x, y, _ = convert_wgs84_geo_geod(float(cols[0]), float(cols[1]), -1 * float(cols[2]))
+                    test_origins[-1] = [cols[3], x / 1000, y / 1000, float(cols[2]) / 1000,
+                                        float(cols[0]), float(cols[1])]
+
+    # If eventIDs are input, use the site positions from FDSN over any others.
+    if not eventid_file:
+        for n in range(len(all_event_origins)):
+            x, y, _ = convert_wgs84_geo_geod(all_event_origins[n][0], all_event_origins[n][1],
+                                                                 -1 * all_event_origins[n][2])
+            all_event_origins[n] = [str(all_event_origins[n][3]), x / 1000, y / 1000, all_event_origins[n][2] / 1000,
+                                    all_event_origins[n][0], all_event_origins[n][1]]
+        test_origins = all_event_origins
+
+    # Build the velocity model lists from the velocity model file
+    if mode != 'spherical':
+        with open(velocity_model, 'r') as openfile:
+            velocity_model = []
+            header = -1
+            for row in openfile:
+                if header == -1:
+                    header = 0
+                else:
+                    cols = row[:-1].split(',')
+                    velocity_model.append([])
+                    for col in cols:
+                        velocity_model[-1].append(float(col))
+    else:
+        velocity_model = None  # A velocity model is not required for spherical travel time calculation,
+        # as this uses IASPEI 91.
+
+    # If no grid file is given, calculate the travel time grid from grid parameters
+    if not grid_file and not test_origins:
+        with open(grid_parameters, 'r') as openfile:
+            grid_parameters = []
+            header = -1
+            for row in openfile:
+                if header == -1:
+                    header = 0
+                else:
+                    cols = row[:-1].split(',')
+                    for col in cols:
+                        grid_parameters.append(float(col))
+        xmin, xmax, ymin, ymax, zmin, zmax, xstep, ystep, zstep = grid_parameters
+
+        # Build travel time grid
+        grid_points = generate_tt_grid(network_data,
+                                       velocity_model,
+                                       mode,
+                                       xmin=xmin,
+                                       xmax=xmax,
+                                       ymin=ymin,
+                                       ymax=ymax,
+                                       zmin=zmin,
+                                       zmax=zmax,
+                                       xstep=xstep,
+                                       ystep=ystep,
+                                       zstep=zstep)
+
+        # Save travel time grid to file
+        with open('tt_grid.csv', 'w') as outfile:
+            outstr = 'x,y,z,'
+            for n in range(len(network_data)):
+                outstr += 'ptt_' + network_data[n][0] + ',stt_' + network_data[n][0] + ','
+            outstr = outstr[:-1] + '\n'
+            outfile.write(outstr)
+
+            # Define the grid header in case the generated grid is used in this run
+            grid_header = outstr[:-1].split(',')
+
+        with open('tt_grid.csv', 'a') as outfile:
+            for i in range(len(grid_points)):
+                for j in range(len(grid_points[i])):
+                    for k in range(len(grid_points[i][j])):
+                        outstr = ''
+                        for m in range(len(grid_points[i][j][k])):
+                            outstr += str(grid_points[i][j][k][m]) + ','
+                        outstr = outstr[:-1] + '\n'
+                        outfile.write(outstr)
+
+    # Otherwise, build the travel time grid from a previously saved grid
+    elif not test_origins:
+        with open(grid_file, 'r') as infile:
+            header = -1
+            gridx = []
+            gridy = []
+            gridz = []
+            travel_times = []
+            for row in infile:
+                if header == -1:
+                    grid_header = row[:-1].split(',')
+                    header = 0
+                else:
+                    cols = row.split(',')
+                    travel_times.append([])
+                    gridx.append(float(cols[0]))
+                    gridy.append(float(cols[1]))
+                    gridz.append(float(cols[2]))
+                    for col in cols[3:]:
+                        travel_times[-1].append(float(col))
+
+        gridx = list(set(gridx))
+        gridy = list(set(gridy))
+        gridz = list(set(gridz))
+        grid_points = [[[[] for z in gridz] for y in gridy] for x in gridx]
+        for i in range(len(gridx)):
+            for j in range(len(gridy)):
+                for k in range(len(gridz)):
+                    grid_points[i][j][k] = [gridx[i], gridy[j], gridz[k]]
+                    grid_points[i][j][k].extend(travel_times[i + j + k])
+
+    # Otherwise, build the travel time grid and header for the test origins
+    else:
+        grid_points = generate_tt_grid(network_data,
+                                       velocity_model,
+                                       mode,
+                                       test_origins=test_origins)
+
+        grid_header = 'x,y,z,'
+        for n in range(len(network_data)):
+            grid_header += 'ptt_' + network_data[n][0] + ',stt_' + network_data[n][0] + ','
+        grid_header = grid_header[:-1].split(',')
+
+    return arrival_time_data, arrival_time_data_header, grid_points, grid_header, test_origins
 
 
 def convert_wgs84_geo_geod(lat, lon, height):
@@ -95,6 +293,29 @@ def FDSN_station_query(station):
     latitude = float(root[4][3][2].text)
     longitude = float(root[4][3][3].text)
     depth = -1 * float(root[4][3][4].text)
+
+    return latitude, longitude, depth
+
+
+def GeoNet_delta_station_query(station):
+
+    """
+    Use pycurl to query station details from GeoNet delta
+    
+    :param station: station site code
+    :return: station latitude (dec. deg.), longitude (dec. deg.), and depth (+ve direction is down, in m)
+    """
+    print(station)  # BUG! If a station doesn't exist via GeoNet FDSN, or in delta, code crashes.
+    # Should the code a) delete all data for such a station, or b) consult a wider metadata database?
+    query = 'https://raw.githubusercontent.com/GeoNet/delta/master/network/stations.csv'
+    queryresult = curl(query)
+    for row in queryresult.decode('utf-8').split('\n')[1:]:
+        cols = row.split(',')
+        if cols[0] == station:
+            latitude = float(cols[3])
+            longitude = float(cols[4])
+            depth = -1 * float(cols[5])
+            break
 
     return latitude, longitude, depth
 
@@ -182,7 +403,10 @@ def get_origins(eventIDs):
             continue
 
         network_data.append([])
-        latitude, longitude, depth = FDSN_station_query(site)
+        try:
+            latitude, longitude, depth = FDSN_station_query(site)
+        except:
+            latitude, longitude, depth = GeoNet_delta_station_query(site)
 
         # Convert WGS84 site geographic coordinates to WGS84 geodetic coordinates
         x, y, _ = convert_wgs84_geo_geod(latitude, longitude, -1 * depth)
@@ -539,9 +763,32 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
     return event_solutions
 
 
+def test_test_origins(method, arrival_time_data, arrival_time_data_header, grid_points, grid_header, test_origins):
+
+    """
+    Perform origin testing using the arrival time data, search grid, location methhod and test origins given.
+    :return: earthquake origins as lists of latitude, longitude, elevation (i.e. the test origin) and origin
+             times and the RMS error associated with each origin calculated as the time difference between its
+             origin time and that of the test origin.
+    """
+
+    earthquake_origins, rms_errors = [], []
+    for n in range(len(test_origins)):
+        earthquake_origins.append(globals()[method]([arrival_time_data[n]],
+                                                    arrival_time_data_header,
+                                                    [[[grid_points[n][n][n]]]],
+                                                    grid_header))
+
+        # Calculate RMS error as the time difference between the test origin time and that from the grid search
+        rms_errors.append(abs((datetime.datetime.strptime(test_origins[n][0],
+                                                          '%Y-%m-%dT%H:%M:%S.%fZ') -
+                               earthquake_origins[-1][3][0]).total_seconds()))
+    return earthquake_origins, rms_errors
+
+
 if __name__ == "__main__":
 
-    # Parse arguments
+    # If the code is executed directly, parse arguments from command line using argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--arrival-time-file', type=str, help='Comma-separated file containing event arrival times '
                                                               'details. First row is header with columns: '
@@ -574,7 +821,7 @@ if __name__ == "__main__":
                                                          'latitude (decimal degrees), '
                                                          'longitude (decimal degrees), '
                                                          'depth (m, +ve direction is down),'
-                                                         'origin time (IS08601 format).')
+                                                         'origin time (IS08601 format, including milliseconds).')
     parser.add_argument('--network-file', type=str, help='Comma-separated file containing network details. '
                                                          'First row is header with columns: '
                                                          'site,latitude,longitude,elevation. '
@@ -602,206 +849,23 @@ if __name__ == "__main__":
     parser.add_argument('--method', type=str, help='Earthquake location method to use, options are: grid_search.')
     args = parser.parse_args()
 
-    # Parse files
-
-    # If a file of eventIDs was given
-    if args.eventid_file:
-
-        # Build the list of eventIDs
-        eventIDs = []
-        with open(args.eventid_file, 'r') as openfile:
-            header = -1
-            for row in openfile:
-                if header == -1:
-                    header = 0
-                else:
-                    eventIDs.append(row[:-1])
-
-        # Build the arrival time and network data lists using FDSN queries and the eventIDs
-        all_event_origins, arrival_time_data_header, arrival_time_data, network_data = get_origins(eventIDs)
-
-    # Otherwise, generate the arrival time and network data lists from the respective files
-    else:
-        arrival_time_data = []
-        with open(args.arrival_time_file, 'r') as openfile:
-            header = -1
-            for row in openfile:
-                if header == -1:
-                    header = 0
-                    arrival_time_data_header = row[:-1].split(',')
-                else:
-                    cols = row[:-1].split(',')
-                    arrival_time_data.append([])
-                    for col in cols[1:]:
-                        if int(col[:4]) < 1900:
-                            arrival_time_data[-1].append(float('nan'))
-                        else:
-                            arrival_time_data[-1].append(datetime.datetime.strptime(col, '%Y-%m-%d %H:%M:%S'))
-
-        network_data = []
-        with open(args.network_file, 'r') as openfile:
-            header = -1
-            for row in openfile:
-                if header == -1:
-                    header = 0
-                else:
-                    cols = row[:-1].split(',')
-                    network_data.append([])
-
-                    # Convert WGS84 geographic coordinates to WGS84 geodetic coordinates
-                    x, y, _ = convert_wgs84_geo_geod(float(cols[1]), float(cols[2]), float(cols[3]))
-                    network_data[-1] = [cols[0], x / 1000, y / 1000, -1 * float(cols[3]) / 1000,
-                                        float(cols[1]), float(cols[2])]
-
-    # If desired, parse the origins to test
-    if args.test_origins:
-        # test_origins = []
-        # with open(args.test_origins, 'r') as openfile:
-        #     header = -1
-        #     for row in openfile:
-        #         if header == -1:
-        #             header = 0
-        #         else:
-        #             cols = row[:-1].split(',')
-        #             test_origins.append([])
-        #
-        #             # Convert WGS84 geographic coordinates to WGS84 geodetic coordinates
-        #             x, y, _ = convert_wgs84_geo_geod(float(cols[0]), float(cols[1]), -1 * float(cols[2]))
-        #             test_origins[-1] = [cols[3], x / 1000, y / 1000, float(cols[2]) / 1000,
-        #                                 float(cols[0]), float(cols[1])]
-        for n in range(len(all_event_origins)):
-            x, y, _ = convert_wgs84_geo_geod(all_event_origins[n][0], all_event_origins[n][1],
-                                                                 -1 * all_event_origins[n][2])
-            all_event_origins[n] = [str(all_event_origins[n][3]), x / 1000, y / 1000, all_event_origins[n][2] / 1000,
-                                    all_event_origins[n][0], all_event_origins[n][1]]
-        test_origins = all_event_origins
-
-    # Build the velocity model lists from the velocity model file
-    if args.mode != 'spherical':
-        velocity_model = []
-        with open(args.velocity_model, 'r') as openfile:
-            header = -1
-            for row in openfile:
-                if header == -1:
-                    header = 0
-                else:
-                    cols = row[:-1].split(',')
-                    velocity_model.append([])
-                    for col in cols:
-                        velocity_model[-1].append(float(col))
-    else:
-        velocity_model = None  # A velocity model is not required for spherical travel time calculation,
-        # as this uses IASPEI 91.
-
-    # If no grid file is given, calculate the travel time grid from grid parameters
-    if not args.grid_file and not args.test_origins:
-
-        grid_parameters = []
-        with open(args.grid_parameters, 'r') as openfile:
-            header = -1
-            for row in openfile:
-                if header == -1:
-                    header = 0
-                else:
-                    cols = row[:-1].split(',')
-                    for col in cols:
-                        grid_parameters.append(float(col))
-        xmin, xmax, ymin, ymax, zmin, zmax, xstep, ystep, zstep = grid_parameters
-
-        # Build travel time grid
-        grid_points = generate_tt_grid(network_data,
-                                       velocity_model,
-                                       args.mode,
-                                       xmin=xmin,
-                                       xmax=xmax,
-                                       ymin=ymin,
-                                       ymax=ymax,
-                                       zmin=zmin,
-                                       zmax=zmax,
-                                       xstep=xstep,
-                                       ystep=ystep,
-                                       zstep=zstep)
-
-        # Save travel time grid to file
-        with open('tt_grid.csv', 'w') as outfile:
-            outstr = 'x,y,z,'
-            for n in range(len(network_data)):
-                outstr += 'ptt_' + network_data[n][0] + ',stt_' + network_data[n][0] + ','
-            outstr = outstr[:-1] + '\n'
-            outfile.write(outstr)
-
-            # Define the grid header in case the generated grid is used in this run
-            grid_header = outstr[:-1].split(',')
-
-        with open('tt_grid.csv', 'a') as outfile:
-            for i in range(len(grid_points)):
-                for j in range(len(grid_points[i])):
-                    for k in range(len(grid_points[i][j])):
-                        outstr = ''
-                        for m in range(len(grid_points[i][j][k])):
-                            outstr += str(grid_points[i][j][k][m]) + ','
-                        outstr = outstr[:-1] + '\n'
-                        outfile.write(outstr)
-
-    # Otherwise, build the travel time grid from a previously saved grid
-    elif not args.test_origins:
-        with open(args.grid_file, 'r') as infile:
-            header = -1
-            gridx = []
-            gridy = []
-            gridz = []
-            travel_times = []
-            for row in infile:
-                if header == -1:
-                    grid_header = row[:-1].split(',')
-                    header = 0
-                else:
-                    cols = row.split(',')
-                    travel_times.append([])
-                    gridx.append(float(cols[0]))
-                    gridy.append(float(cols[1]))
-                    gridz.append(float(cols[2]))
-                    for col in cols[3:]:
-                        travel_times[-1].append(float(col))
-
-        gridx = list(set(gridx))
-        gridy = list(set(gridy))
-        gridz = list(set(gridz))
-        grid_points = [[[[] for z in gridz] for y in gridy] for x in gridx]
-        for i in range(len(gridx)):
-            for j in range(len(gridy)):
-                for k in range(len(gridz)):
-                    grid_points[i][j][k] = [gridx[i], gridy[j], gridz[k]]
-                    grid_points[i][j][k].extend(travel_times[i + j + k])
-
-    # Otherwise, build the travel time grid and header for the test origins
-    else:
-        grid_points = generate_tt_grid(network_data,
-                                       velocity_model,
-                                       args.mode,
-                                       test_origins=test_origins)
-
-        grid_header = 'x,y,z,'
-        for n in range(len(network_data)):
-            grid_header += 'ptt_' + network_data[n][0] + ',stt_' + network_data[n][0] + ','
-        grid_header = grid_header[:-1].split(',')
+    # Parse files and parameters
+    arrival_time_data, arrival_time_data_header, grid_points, grid_header, test_origins = parse_files(
+        eventid_file=args.eventid_file,
+        test_origins=args.test_origins,
+        network_file=args.network_file,
+        velocity_model=args.velocity_model,
+        grid_parameters=args.grid_parameters,
+        grid_file=args.grid_file,
+        search_mode=args.mode)
+    method = args.method
 
     # Perform earthquake location
-    method = args.method
-    if method == 'grid_search':
-        if args.test_origins:
-            for n in range(len(test_origins)):
-                print('The current test origin is ' + str(test_origins[n][1]) + ', ' + str(test_origins[n][2]) +
-                      ', ' + str(test_origins[n][3]))
-                earthquake_origins = grid_search([arrival_time_data[n]],
-                                                 arrival_time_data_header,
-                                                 [[[grid_points[n][n][n]]]],
-                                                 grid_header)
-
-                # Calculate RMS error as the time difference between the test origin time and that from the grid search
-                print(test_origins[n])
-                rms = abs((datetime.datetime.strptime(test_origins[n][0],
-                                                      '%Y-%m-%dT%H:%M:%S.%fZ') - earthquake_origins[3][0]).total_seconds())
-                print(earthquake_origins, rms)
-
-    print(datetime.datetime.now())
+    if method == 'grid_search':  # Code only supports one method currently
+        if args.test_origins:  # ...and has only been tested for one use case
+            earthquake_origins, rms_errors = test_test_origins(method,
+                                                               arrival_time_data,
+                                                               arrival_time_data_header,
+                                                               grid_points,
+                                                               grid_header,
+                                                               test_origins)
