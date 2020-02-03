@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Produce earthquake locations
+Produce earthquake locations. Only works for manually defined events, or those from the GeoNet catalogue.
 """
 
 import argparse
@@ -305,8 +305,7 @@ def GeoNet_delta_station_query(station):
     :param station: station site code
     :return: station latitude (dec. deg.), longitude (dec. deg.), and depth (+ve direction is down, in m)
     """
-    print(station)  # BUG! If a station doesn't exist via GeoNet FDSN, or in delta, code crashes.
-    # Should the code a) delete all data for such a station, or b) consult a wider metadata database?
+
     query = 'https://raw.githubusercontent.com/GeoNet/delta/master/network/stations.csv'
     queryresult = curl(query)
     for row in queryresult.decode('utf-8').split('\n')[1:]:
@@ -393,6 +392,7 @@ def get_origins(eventIDs):
     # Build network data using site list and FDSN
     network_data = []
     sites = []
+    found = []
     for n in range(len(arrival_time_data_header)):
 
         # Get site name and details
@@ -403,16 +403,51 @@ def get_origins(eventIDs):
             continue
 
         network_data.append([])
+        # Search the GeoNet FDSN database for the station location
         try:
             latitude, longitude, depth = FDSN_station_query(site)
         except:
-            latitude, longitude, depth = GeoNet_delta_station_query(site)
+            # If this fails, search the GeoNet delta database for the station location
+            try:
+                latitude, longitude, depth = GeoNet_delta_station_query(site)
+            except:
+                # If this fails, save the location details as None for later removal
+                latitude, longitude, depth = None, None, None
 
-        # Convert WGS84 site geographic coordinates to WGS84 geodetic coordinates
-        x, y, _ = convert_wgs84_geo_geod(latitude, longitude, -1 * depth)
-        network_data[-1] = [site, x / 1000, y / 1000, depth / 1000,
-                            latitude, longitude]
+        if latitude:
+            # Convert WGS84 site geographic coordinates to WGS84 geodetic coordinates
+            x, y, _ = convert_wgs84_geo_geod(latitude, longitude, -1 * depth)
+            network_data[-1] = [site, x / 1000, y / 1000, depth / 1000,
+                                latitude, longitude]
+            found.append(True)
+        else:
+            # As before, save data so it can be removed
+            network_data[-1] = [site, None, None, None, None, None]
+            found.append(False)
         sites.append(site)
+
+    num_found = found.count(True)
+    if num_found != len(sites):
+        # Remake the arrival time header and network data lists
+        temp_ATDH = []
+        temp_ND = []
+        for n in range(len(found)):
+            if found[n]:
+                temp_ATDH.append(sites[n] + '_P')
+                temp_ATDH.append(sites[n] + '_S')
+                temp_ND.append(network_data[n])
+
+        # Remake the arrival time data list
+        temp_ATD = [[] for n in range(len(temp_ATDH))]
+        for n in range(len(temp_ATDH)):
+            for m in range(len(arrival_time_data_header)):
+                if temp_ATDH[n] == arrival_time_data_header[m]:
+                    for k in range(len(arrival_time_data)):
+                        temp_ATD[n].append(arrival_time_data[k][m])
+
+        arrival_time_data_header = temp_ATDH
+        arrival_time_data = temp_ATD
+        network_data = temp_ND
 
     return all_event_origins, arrival_time_data_header, arrival_time_data, network_data
 
