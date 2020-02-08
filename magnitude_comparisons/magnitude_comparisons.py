@@ -68,11 +68,10 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
               
                 print('\nAttempting FDSN catalog query for events between M ' + str(magnitude_limits[i - 1]) +
                       ' and ' + str(magnitude_limits[i]))
-  
+
                 queryresult = curl(query)
 
                 catalog = quakeml_reader.loads(queryresult)
-
                 events.extend(catalog.events)
                 print('Catalog now has ' + str(len(events)) + ' events')
                 successes += 1
@@ -100,7 +99,7 @@ def curl(curlstr):
     :return: curl output
     """
 
-    buffer = io.BytesIO()
+    buffer = BytesIO()
     c = pycurl.Curl()
     c.setopt(c.URL, curlstr)
     c.setopt(c.WRITEDATA, buffer)
@@ -271,14 +270,14 @@ def parse_data(filelist, split_str, starttime, endtime):
                         endtime):
                         for i in range(len(rowsplit)):
                             datalist[i][j].append(str(rowsplit[i]))
-                if len(datalist[0][j]) > 0:
-                    data_types.append(file.split('/')[-1].split(split_str)[0])
+        if len(datalist[0][j]) > 0:
+            data_types.append(file.split('/')[-1].split(split_str)[0])
 
     return datalist, data_types
 
 
-def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist, 
-                     rms_threshold, show_matching)
+def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
+                     rms_threshold, show_matching):
 
     """
     Match events between two catalogs and save all events and their matched magnitudes to file
@@ -366,7 +365,7 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
 
                         temporal_lengths = []
                         spatial_lengths = []
-                        lengths = [[], []]
+                        lengths = []
                         indices = []
                         ETi, ELa, ELo, EDe = [datetime.datetime.strptime(magnitude_timeseries[1][n][k], 
                                                                          '%Y-%m-%dT%H:%M:%S.%fZ'),
@@ -399,21 +398,16 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                             indices.append(l)
 
                         if len(lengths) > 0:
-                            match_idx = indices[lengths.index(min(lengths))] # Event match is that with smallest length
 
-                            matched_spatial_lengths.append(spatial_lengths[indices.index(match_idx)])
-                            matched_temporal_lengths.append(temporal_lengths[indices.index(match_idx)])
-
-                            lengths[0].append(math.sqrt(temporal_length ** 2 + spatial_length ** 2))
-                            lengths[1].append(l)
-
-                        if len(lengths[0]) > 0:
                             # Search all possible matches and use an earthquake location routine to test
                             # if the events are representing the same earthquake. The rms threshold value
                             # is used as a proxy for this.
 
                             # Sort the length lists
-                            lengths[0], lengths[1] = zip(*sorted(zip(lengths[0], lengths[1])))
+                            lengths, spatial_lengths, temporal_lengths, indices, = zip(*sorted(zip(lengths,
+                                                                                                   spatial_lengths,
+                                                                                                   temporal_lengths,
+                                                                                                   indices)))
 
                             # Make the event file to use in the earthquake location
                             event_file = open('temporary_event_file', 'w')
@@ -425,8 +419,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                             # NOTE: only works for reference catalogue being the GeoNet catalogue currently!
                             # event_file contains the eventID from the GeoNet catalogue
                             # test_origins contains the potential match hypocentre and origin time
-                            for l in range(len(lengths[0])):
-                                match_idx = lengths[1][l]
+                            for l in range(len(indices)):
+                                match_idx = indices[l]
 
                                 test_origins = open('temporary_test_origins', 'w')
                                 test_origins.write('latitude,longitude,depth,origin_time\n' +
@@ -467,6 +461,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                                         magnitude_timeseries[3][n][k]
                                     datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
                                         magnitude_timeseries[3][m][match_idx]
+                                    matched_spatial_lengths.append(spatial_lengths[indices.index(match_idx)])
+                                    matched_temporal_lengths.append(temporal_lengths[indices.index(match_idx)])
                                     break  # break on the first matching event
 
                             os.remove('temporary_event_file')
@@ -641,8 +637,8 @@ def probability(sample_magnitudes, sample_depths, sample_times,
 minmagnitude = 4  # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -67, -33  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 145, -175  # minimum and maximum longitude for event search window
-starttime = '2001-05-18T00:00:00'  # event query starttime
-endtime = 'now'  # event query endtime, 'now' will set it to the current time
+starttime = '2012-01-01T00:00:00'  # event query starttime
+endtime = '2020-02-01T00:00:00'  # event query endtime, 'now' will set it to the current time
 
 if endtime == 'now':
     endtime = str(datetime.datetime.now().isoformat())[:19]
@@ -680,8 +676,8 @@ bin_overlap = 0.9  # percentage each time bin should overlap
 # this, and this data should not be included in a long-term dataset trying to determine likelihood of earthquakes!
 
 # Set what level of processing you want the script to do
-build_FDSN_timeseries = False
-build_GeoNet_Mw_timeseries = False
+build_FDSN_timeseries = True
+build_GeoNet_Mw_timeseries = True
 probabilities = False
 matching = True
 show_matching = False
@@ -696,7 +692,7 @@ if build_FDSN_timeseries:
     for n in range(len(catalogs)):
 
         catalogs[n] = FDSN_event_query(services[n], minmagnitude, minlongitude, maxlongitude,
-                                       minlatitude, maxlatitude, starttime)
+                                       minlatitude, maxlatitude, starttime, endtime)
         print('\n' + str(len(catalogs[n])) + ' events were found in catalog ' + str(n + 1))
 
     # Create a timeseries of use of each magnitude type in comparison_magnitudes for each catalog
@@ -708,12 +704,12 @@ if build_GeoNet_Mw_timeseries:
 
     GeoNet_Mw(minmagnitude, starttime, endtime)
 
+# Convert date strings to datetime objects
+
+starttime = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%S')
+endtime = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%S')
+
 if probabilities:
-
-    # Convert date strings to datetime objects
-
-    starttime = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%S')
-    endtime = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%S')
 
     # Load timeseries data from files
 
@@ -837,13 +833,6 @@ if probabilities:
 
 if matching:
 
-    if probabilities:
-
-        # Return start and end times to ISO8601 format
-
-        starttime = str(starttime.isoformat())
-        endtime = str(endtime.isoformat())
-
     # Parse all data
 
     magnitude_timeseries_files = glob.glob('./*timeseries.csv')
@@ -855,7 +844,7 @@ if matching:
     print("Matching events within temporal and spatial distance limits and with the desired magnitude types")
 
     match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
-                     show_matching)
+                     rms_threshold, show_matching)
 
 # Load magnitude match data
 
