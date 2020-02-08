@@ -346,7 +346,7 @@ def get_origins(eventIDs):
         arrival_data = [[], [], []]
         for n in range(len(picks)):
             for m in range(len(arrivals)):
-                if arrivals[m].time_weight and arrivals[m].time_weight > 0:
+                if arrivals[m].time_weight and arrivals[m].time_weight > 0 and arrivals[m].phase in ['P', 'S']:
                     if picks[n].resource_id == arrivals[m].pick_id:
                         arrival_data[0].append(picks[n].waveform_id['station_code'])
                         arrival_data[1].append(arrivals[m].phase)
@@ -724,7 +724,11 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
                     rms = math.sqrt(rms)
 
                     # Calculate weight, maximum weight, sum of weights for confidence interval determination
-                    weight = 1 / (rms ** 2)
+                    try:
+                        weight = 1 / (rms ** 2)
+                    except:  # If it fails, then there is only one data point, so it's weight should be very high
+                        weight = 9999
+
                     if weight > max_weight:
                         max_weight = weight
                     weight_sum += weight
@@ -815,9 +819,14 @@ def test_test_origins(method, arrival_time_data, arrival_time_data_header, grid_
                                                     grid_header))
 
         # Calculate RMS error as the time difference between the test origin time and that from the grid search
-        rms_errors.append(abs((datetime.datetime.strptime(test_origins[n][0],
-                                                          '%Y-%m-%dT%H:%M:%S.%fZ') -
-                               earthquake_origins[-1][3][0]).total_seconds()))
+        try:
+            rms_errors.append(abs((datetime.datetime.strptime(test_origins[n][0],
+                                                              '%Y-%m-%dT%H:%M:%S.%fZ') -
+                                   earthquake_origins[-1][3][0]).total_seconds()))
+        except:  # If this fails, assume it's due to a different format in the test origin
+            rms_errors.append(abs((datetime.datetime.strptime(test_origins[n][0],
+                                                              '%Y-%m-%dT%H:%M:%SZ') -
+                                   earthquake_origins[-1][3][0]).total_seconds()))
     return earthquake_origins, rms_errors
 
 
