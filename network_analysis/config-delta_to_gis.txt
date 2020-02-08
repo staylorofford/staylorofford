@@ -1,0 +1,5 @@
+# Config file for delta_to_gis.py
+# Enter the desired values for each input parameter on the right hand side of relevant variable definition
+# Ensure format of <parameter> = <value> is maintained.
+
+delta_root_path = /home/samto/git/delta/ #  Format is full path to delta root folder, optionally including final /

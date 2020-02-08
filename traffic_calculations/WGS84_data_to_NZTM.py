@@ -12,8 +12,9 @@ if __name__ == "__main__":
 
     # Parse arguments
 
-    parser = argparse.ArgumentParser(description='What does this script do?')
-    parser.add_argument('file_directory', type=str, help="Path to directory containing time series csv files in WGS84")
+    parser = argparse.ArgumentParser(description='Convert csv file(s) in a folder from WGS84 to NZTM')
+    parser.add_argument('file_directory', type=str, help="Absolute path to directory containing time series csv files "
+                                                         "in WGS84")
     args = parser.parse_args()
 
     file_dir = args.file_directory

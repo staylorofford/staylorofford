@@ -1,22 +1,25 @@
 """
-Compare earthquake magnitudes across catalogues and magnitude types.
+Compare earthquake magnitudes within or between their representations in earthquake catalogues.
 """
 
 import datetime
-import earthquake_location  # Import the earthquake_location.py code from the staylorofford Git repository
+import earthquake_location
 import glob
-import io
-from obspy.io.quakeml.core import Unpickler
+from io import BytesIO
 import math
 import matplotlib.pyplot as plt
+from obspy.io.quakeml.core import Unpickler
 import os
 import pycurl
+from scipy.odr import Model, Data, ODR
 
 quakeml_reader = Unpickler()
 
+
 def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
-                     minlatitude, maxlatitude, starttime='0000-01-01T00:00:00',
-                     maxmagnitude=10):
+                     minlatitude, maxlatitude, starttime = '0000-01-01T00:00:00',
+                     endtime = '9999-01-01T00:00:00', maxmagnitude = 10):
+  
     """
     Use obspy with pycurl to query event catalogs from FDSN members.
     :param service:
@@ -27,6 +30,7 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
     :param minlatitude:
     :param maxlatitude:
     :param starttime:
+    :param endtime:
     :return:
     """
 
@@ -36,9 +40,11 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
 
     # Curl FDSN response and parse quakeml bytes string through obspy
     # using an interative query approach when a single query fails
+
     factor = 1
     success = False
-    while success == False:
+    while not success:
+
         successes = 0
         events = []
 
@@ -56,11 +62,13 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                                 "&maxmagnitude=", str(magnitude_limits[i]),
                                 "&minlatitude=", str(minlatitude), "&maxlatitude=", str(maxlatitude),
                                 "&minlongitude=", str(minlongitude), "&maxlongitude=", str(maxlongitude),
-                                "&starttime=", starttime))
+                                "&starttime=", starttime, "&endtime=", endtime))
 
             try:
+              
                 print('\nAttempting FDSN catalog query for events between M ' + str(magnitude_limits[i - 1]) +
                       ' and ' + str(magnitude_limits[i]))
+  
                 queryresult = curl(query)
 
                 catalog = quakeml_reader.loads(queryresult)
@@ -175,12 +183,13 @@ def build_magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes):
                             + ',' + str(datalist[6][j][n]) + '\n')
 
 
-def GeoNet_Mw(minmagnitude, starttime):
+def GeoNet_Mw(minmagnitude, starttime, endtime):
 
     """
     Query GeoNet Mw catalog from GitHub
     :param minmagnitude:
     :param starttime:
+    :param endtime:
     :return: saves to file datalist in the same format as generate_timeseries function
     """
 
@@ -201,9 +210,11 @@ def GeoNet_Mw(minmagnitude, starttime):
                 continue
             else:
                 time = rowsplit[1]
+                
                 if ((datetime.datetime.strptime(time, '%Y%m%d%H%M%S') >= datetime.datetime.strptime(starttime,
                                                                                                     '%Y-%m-%dT%H:%M:%S'))
                         and (float(rowsplit[11]) >= minmagnitude)):
+    
                     try:
                         URL = "https://service.geonet.org.nz/fdsnws/event/1/query?eventid=" + rowsplit[0]
                         event = quakeml_reader.loads(curl(URL))[0]
@@ -233,12 +244,14 @@ def GeoNet_Mw(minmagnitude, starttime):
                     + ',' + str(datalist[6][n]) + '\n')
 
 
-def parse_data(filelist, split_str):
+def parse_data(filelist, split_str, starttime, endtime):
 
     """
-    Parse magnitude timeseries or matches from csv file
+    Parse magnitude timeseries or matches from csv file, using start and end times for time filtering
     :param filelist: list of files
     :param split_str: string to split filename by to get file type
+    :param starttime: do not load data from before this time
+    :param endtime: do not load data from after this time
     :return: list of data in file, list of type of data in files
     """
 
@@ -253,16 +266,19 @@ def parse_data(filelist, split_str):
                     rc += 1
                 else:
                     rowsplit = row.split(',')
-                    for i in range(len(rowsplit)):
-                        datalist[i][j].append(str(rowsplit[i]))
-            if len(datalist[0][j]) > 0:
-                data_types.append(file.split('/')[-1].split(split_str)[0])
+                    if (starttime <=
+                        datetime.datetime.strptime(rowsplit[1], '%Y-%m-%dT%H:%M:%S.%fZ') <=
+                        endtime):
+                        for i in range(len(rowsplit)):
+                            datalist[i][j].append(str(rowsplit[i]))
+                if len(datalist[0][j]) > 0:
+                    data_types.append(file.split('/')[-1].split(split_str)[0])
 
     return datalist, data_types
 
 
-def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
-                     rms_threshold):
+def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist, 
+                     rms_threshold, show_matching)
 
     """
     Match events between two catalogs and save all events and their matched magnitudes to file
@@ -275,6 +291,7 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
     :param max_dist: maximum distance (absolute) between events for them to be matched
     :param rms_threshold: origin time difference at which events from different catalogues are considered to
            represent the same earthquake
+    :param show_matching: whether to plot relative distance and time of all events that have matched
     :return: saves matched events with matched magnitudes to a csv file
     """
 
@@ -312,6 +329,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
 
     # Match events between timeseries and fill in magnitude information in the datalist
     complete_pairs = []
+    matched_temporal_lengths = []
+    matched_spatial_lengths = []
     for n in range(len(timeseries_types)):
         if timeseries_types[n].split('_')[0] == catalog_names[0].split('_')[0] and \
                 timeseries_types[n].split('_')[2] in comparison_magnitudes[0]:
@@ -344,10 +363,14 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                         event_index = event_list.index(magnitude_timeseries[0][n][k])
 
                         # Calculate 2D length between event and reference events for matching criteria
+
+                        temporal_lengths = []
+                        spatial_lengths = []
                         lengths = [[], []]
-                        ETi, ELa, ELo, EDe = [datetime.datetime.strptime(magnitude_timeseries[1][n][k],
+                        indices = []
+                        ETi, ELa, ELo, EDe = [datetime.datetime.strptime(magnitude_timeseries[1][n][k], 
                                                                          '%Y-%m-%dT%H:%M:%S.%fZ'),
-                                              float(magnitude_timeseries[4][n][k]),
+                                              float(magnitude_timeseries[4][n][k]), 
                                               float(magnitude_timeseries[5][n][k]),
                                               float(magnitude_timeseries[6][n][k])]
                         Ex, Ey, Ez = to_cartesian(ELa, ELo, EDe)
@@ -361,13 +384,25 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                             REx, REy, REz = to_cartesian(RELa, RELo, REDe)
 
                             temporal_length = abs((ETi - RETi).total_seconds())
-
                             if temporal_length > max_dt:
                                 continue
+                            else:
+                                temporal_lengths.append(temporal_length)
 
                             spatial_length = math.sqrt((Ex - REx) ** 2 + (Ey - REy) ** 2 + (Ez - REz) ** 2) / 1000.0
                             if spatial_length > max_dist:
                                 continue
+                            else:
+                                spatial_lengths.append(spatial_length)
+
+                            lengths.append(math.sqrt(temporal_length ** 2 + spatial_length ** 2))
+                            indices.append(l)
+
+                        if len(lengths) > 0:
+                            match_idx = indices[lengths.index(min(lengths))] # Event match is that with smallest length
+
+                            matched_spatial_lengths.append(spatial_lengths[indices.index(match_idx)])
+                            matched_temporal_lengths.append(temporal_lengths[indices.index(match_idx)])
 
                             lengths[0].append(math.sqrt(temporal_length ** 2 + spatial_length ** 2))
                             lengths[1].append(l)
@@ -409,13 +444,17 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                                                                     test_origins='temporary_test_origins',
                                                                     mode='spherical')
 
-                                # Perform earthquake location
-                                earthquake_origins, rms_errors = earthquake_location.test_test_origins('grid_search',
-                                                                                                       arrival_time_data,
-                                                                                                       arrival_time_data_header,
-                                                                                                       grid_points,
-                                                                                                       grid_header,
-                                                                                                       test_origins)
+                                # Check arrival time data is non-empty, and if it is, ensure arrival is ignored
+                                if len(arrival_time_data) == 1 and len(arrival_time_data[0]) == 0:
+                                    print('No arrival time data exists for this event! It will produce no match.')
+                                    earthquake_origins, rms_errors = [[0, 0, 0, datetime.datetime.now()], [9999]]
+                                else:  # Otherwise, perform earthquake location
+                                    earthquake_origins, rms_errors = earthquake_location.test_test_origins('grid_search',
+                                                                                                           arrival_time_data,
+                                                                                                           arrival_time_data_header,
+                                                                                                           grid_points,
+                                                                                                           grid_header,
+                                                                                                           test_origins)
                                 rms_error = rms_errors[0]
                                 print('For match_idx ' + str(match_idx) + ' rms error is ' + str(rms_error))
 
@@ -434,6 +473,18 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                             os.remove('temporary_test_origins')
 
                 complete_pairs.append(str(n) + ',' + str(m))
+
+    if show_matching:
+
+        print('\nNOTE: To investigate the spread of matched data in an unconstrained format, ensure maximum limits are'
+              '>=1E9\n')
+
+        plt.scatter(matched_temporal_lengths, matched_spatial_lengths, s=2)
+        plt.xlabel('relative time (s)', labelpad=15)
+        plt.ylabel('relative distance (km)', labelpad=15)
+        plt.title('relative distance vs. time for all matched events')
+        plt.tight_layout()
+        plt.show()
 
     # Write datalist to file
     with open('magnitude_matches_all.csv', 'w') as outfile:
@@ -498,17 +549,103 @@ def plot_timeseries(magnitude_timeseries, timeseries_types):
     plt.show()
 
 
-# Set script parameters
-minmagnitude = 4     # minimum event magnitude to get from catalog
-minlatitude, maxlatitude = -60, -13  # minimum and maximum latitude for event search window
-minlongitude, maxlongitude = 145, -145  # minimum and maximum longitude for event search window
-starttime = '2012-01-01T00:00:00'  # event query starttime
+def f(P, x):
 
-max_dt = 100  # maximum time (s) between events in separate catalogs for them to be considered records of
-              # the same earthquake
-max_dist = 1000  # maximum distance (km) "
-rms_threshold = 10  # origin time potential matches must be within (in seconds) when one is relocated using the
-                   # arrival time picks of the other in a spherical Earth grid search.
+    """
+    Point on line function to use in orthogonal regression
+    :param P: m, c values for line
+    :param x: dataset values
+    :return point on line values for x value in x
+    """
+
+    return P[0] * x + P[1]
+
+
+def orthregress(x, y):
+
+    """
+    Perform an orthogonal distance regression,
+    :param x: dataset 1 values
+    :param y: dataset 2 values
+    :return: gradient, intercept of orthogonal distance regression
+    """
+
+    # Run orthogonal regression
+
+    model = Model(f)
+    data = Data(x, y)
+    odr = ODR(data, model, beta0=[1, 1])
+    output = odr.run()
+    m, c = output.beta
+
+    return m, c
+
+
+def probability(sample_magnitudes, sample_depths, sample_times,
+                min_mag, max_mag, min_depth, max_depth,
+                probability_time_period, number_of_events):
+
+    """
+    Calculate the Poisson probability that a number of earthquakes will occur with magnitude value
+    within a given range within a given time period
+    :param sample_magnitudes: list of magnitude values for earthquakes in the sample
+    :param sample_depths: list of event depths for earthquakes in the sample
+    :param sample_times: list of time values for earthquakes in the sample
+    :param min_mag: minimum magnitude to include in the probability
+    :param max_mag: maximum magnitude to include in the probability
+    :param min_depth: minimum event depth to include in the probability (in km)
+    :param max_depth: maximum event depth to include in the probability (in km)
+    :param probability_time_period: length of time (in hours) to calculate the probability of at least 1
+                                    earthquake occurring over
+    :param number_of_events: number of events to calculate probability of occurrence for, use 'any' to calculate
+                             the probability at least 1 event
+    :return: probability of earthquake(s) happening in the length of time input with a magnitude in the range input
+    """
+
+    # Calculate set of magnitudes to calculate mean rate for
+
+    set_magnitudes = []
+    set_times = []
+    for m in range(len(sample_magnitudes)):
+        if min_mag <= sample_magnitudes[m] <= max_mag and min_depth <= sample_depths[m] <= max_depth:
+            set_magnitudes.append(sample_magnitudes[m])
+            set_times.append(sample_times[m])
+
+    # Calculate rate of an earthquakes in the magnitude range per hour
+
+    N = len(set_magnitudes)
+
+    if len(set_times) < 2:
+        print('Not enough data exists within the specified magnitude and depth limits for this time period!')
+        return 'nan', 'nan'
+
+    mean_rate = N / (max(set_times) - min(set_times)).total_seconds() * 3600.0
+
+    # Calculate rate of an earthquake in the magnitude range for the given time period
+
+    mean_rate_time_period = mean_rate * probability_time_period
+
+    # Calculate Poisson probability of 1 or more earthquakes happening in this time period
+
+    if number_of_events == 'any':
+        p = 1 - (math.exp(-mean_rate_time_period) * (mean_rate_time_period ** 0) / math.factorial(0))
+    else:
+        p = (math.exp(-1 * mean_rate_time_period) * (mean_rate_time_period ** number_of_events) /
+            math.factorial(number_of_events))
+
+    return p, N
+
+
+# Set data gathering parameters
+
+minmagnitude = 4  # minimum event magnitude to get from catalog
+minlatitude, maxlatitude = -67, -33  # minimum and maximum latitude for event search window
+minlongitude, maxlongitude = 145, -175  # minimum and maximum longitude for event search window
+starttime = '2001-05-18T00:00:00'  # event query starttime
+endtime = 'now'  # event query endtime, 'now' will set it to the current time
+
+if endtime == 'now':
+    endtime = str(datetime.datetime.now().isoformat())[:19]
 
 # Define catalogs and their associated FDSN webservice event URL
 catalog_names = ['GeoNet_catalog', 'USGS_catalog']
@@ -519,17 +656,42 @@ catalogs = [[] for i in range(len(catalog_names))]
 # Code will do all combinations across the two catalogs
 comparison_magnitudes = [['Mw(mB)'], ['mww']]
 
+# Set matching parameters
+
+max_dt = 100  # maximum time (s) between events in separate catalogs for them to be considered records of
+              # the same earthquake
+max_dist = 1000  # maximum distance (km) "
+rms_threshold = 10  # origin time potential matches must be within (in seconds) when one is relocated using the
+                    # arrival time picks of the other in a spherical Earth grid search.
+
+# Set probability parameters
+
+probability_magnitude_types = comparison_magnitudes[0]  # magnitude types to find the largest magnitude for each event
+min_mag = 6
+max_mag = 10
+min_depth = 0  # minimum depth of earthquake to include, in km
+max_depth = 100  # maximum depth of earthquake to include, in km
+probability_time_period = 24 * 7  # time period to calculate probability over, in hours
+number_of_events = 'any'  # number of events to calculate probability for
+time_bins = 19  # number of bins to split the query time period into
+bin_overlap = 0.9  # percentage each time bin should overlap
+# ^ need something to plot against to know if probabilities are reasonable, perhaps total # of events in time period,
+# or # of stations? looks like pre-2010 data behaves very differently, suggesting something network-related influences
+# this, and this data should not be included in a long-term dataset trying to determine likelihood of earthquakes!
+
 # Set what level of processing you want the script to do
 build_FDSN_timeseries = False
 build_GeoNet_Mw_timeseries = False
+probabilities = False
 matching = True
+show_matching = False
 
 # Build event catalogs from FDSN
 if build_FDSN_timeseries:
 
     print('\nSearching earthquake catalogs for events above magnitude ' + str(minmagnitude) +
           ' between ' + str(minlatitude) + ' and ' + str(maxlatitude) + ' degrees latitude and ' +
-          str(minlongitude) + ' and ' + str(maxlongitude) + ' degrees longitude after ' + starttime)
+          str(minlongitude) + ' and ' + str(maxlongitude) + ' degrees longitude after ' + str(starttime))
 
     for n in range(len(catalogs)):
 
@@ -541,22 +703,162 @@ if build_FDSN_timeseries:
     build_magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes)
 
 # Build GeoNet Mw catalog
+
 if build_GeoNet_Mw_timeseries:
 
-    GeoNet_Mw(minmagnitude, starttime)
+    GeoNet_Mw(minmagnitude, starttime, endtime)
 
-# Load timeseries data from files and do event matching
-if matching:
+if probabilities:
+
+    # Convert date strings to datetime objects
+
+    starttime = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%S')
+    endtime = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%S')
+
+    # Load timeseries data from files
 
     magnitude_timeseries_files = glob.glob('./*timeseries.csv')
-    magnitude_timeseries, timeseries_types = parse_data(magnitude_timeseries_files, '_timeseries')
+    bin_length = (endtime - starttime).total_seconds() / time_bins
+    current_start_time = starttime
+    current_end_time = starttime + datetime.timedelta(seconds=bin_length)
+
+    start_times = []
+    end_times = []
+    probabilities = []
+    sample_numbers = []
+    while current_end_time <= endtime:
+
+        magnitude_timeseries, timeseries_types = parse_data(magnitude_timeseries_files, '_timeseries',
+                                                            current_start_time, current_end_time)
+
+        print('\nCalculating probabilities...\n')
+
+        # Calculate probability for each magnitude type
+
+        for m in range(len(magnitude_timeseries[2])):
+
+            if len(magnitude_timeseries[2][m]) == 0:
+                continue
+
+            sample_times = []
+            sample_magnitudes = []
+            sample_depths = []
+
+            if magnitude_timeseries[2][m][0] in probability_magnitude_types:
+                for n in range(len(magnitude_timeseries[2][m])):
+                    sample_times.append(datetime.datetime.strptime(magnitude_timeseries[1][m][n],
+                                                                   '%Y-%m-%dT%H:%M:%S.%fZ'))
+                    sample_magnitudes.append(float(magnitude_timeseries[3][m][n]))
+                    sample_depths.append(float(magnitude_timeseries[6][m][n]) / 1000.0)
+            else:
+                continue
+
+            p, N = probability(sample_magnitudes, sample_depths, sample_times,
+                               min_mag, max_mag, min_depth, max_depth,
+                               probability_time_period, number_of_events)
+
+            if p != 'nan':
+
+                print('Probability of ' + str(number_of_events) + ' events of magnitude type ' + str(timeseries_types[m]) +
+                      ' between magnitude values ' + str(min_mag) + ' - ' + str(max_mag) +
+                      ' betweeen depths of ' + str(min_depth) + ' - ' + str(max_depth) +
+                      ' km occurring in ' + str(probability_time_period) + ' hours is ' +
+                      str(p) + ', from ' + str(N) + ' samples over the period ' +
+                      str(current_start_time.isoformat()) + ' - ' + str(current_end_time.isoformat()) + '\n')
+
+        # Calculate probability using maximum magnitude for each event
+
+        all_events = []
+        all_times = []
+        all_magnitudes = []
+        all_depths = []
+        for m in range(len(magnitude_timeseries[2])):
+            if len(magnitude_timeseries[2][m]) == 0:  # Do not process empty bins
+                continue
+            if magnitude_timeseries[2][m][0] in probability_magnitude_types:
+                for n in range(len(magnitude_timeseries[2][m])):
+                    all_events.append(magnitude_timeseries[0][m][n])
+                    all_times.append(datetime.datetime.strptime(magnitude_timeseries[1][m][n], '%Y-%m-%dT%H:%M:%S.%fZ'))
+                    all_magnitudes.append(float(magnitude_timeseries[3][m][n]))
+                    all_depths.append(float(magnitude_timeseries[6][m][n]) / 1000.0)
+
+        # Find the largest magnitude for each event
+
+        sample_events = []
+        sample_times = []
+        sample_magnitudes = []
+        sample_depths = []
+        for m in range(len(all_events)):
+            if all_events[m] not in sample_events:
+                all_sample_magnitudes = []
+                for n in range(len(all_events)):
+                    if all_events[m] == all_events[n]:
+                        all_sample_magnitudes.append(all_magnitudes[n])
+                sample_events.append(all_events[m])
+                sample_times.append(all_times[m])
+                sample_depths.append(all_depths[m])
+                sample_magnitudes.append(max(all_sample_magnitudes))
+
+        # Calculate probability
+
+        p, N = probability(sample_magnitudes, sample_depths, sample_times,
+                           min_mag, max_mag, min_depth, max_depth,
+                           probability_time_period, number_of_events)
+
+        if p != 'nan':
+
+            print('Probability of ' + str(number_of_events) + ' events of any of the above magnitude types' +
+                  ' between magnitude values ' + str(min_mag) + ' - ' + str(max_mag) +
+                  ' betweeen depths of ' + str(min_depth) + ' - ' + str(max_depth) +
+                  ' km occurring in ' + str(probability_time_period) + ' hours is ' +
+                  str(p) + ', from ' + str(N) + ' over the period ' +
+                  str(current_start_time.isoformat()) + ' - ' + str(current_end_time.isoformat()) + '\n')
+
+            probabilities.append(p)
+            sample_numbers.append(N)
+            start_times.append(current_start_time)
+            end_times.append(current_end_time)
+
+        current_start_time += datetime.timedelta(seconds=int(round(bin_length * (1 - bin_overlap))))
+        current_end_time += datetime.timedelta(seconds=int(round(bin_length * (1 - bin_overlap))))
+
+    plot_times = []
+    for n in range(len(probabilities)):
+        plot_time = start_times[n] # + datetime.timedelta(seconds=(end_times[n] - start_times[n]).total_seconds() / 2)
+        plt.scatter(plot_time, probabilities[n], color='k', s=2)
+        plt.text(plot_time, probabilities[n], str(sample_numbers[n]))
+        plot_times.append(plot_time)
+    plt.plot(plot_times, probabilities, linestyle='--', marker='o', color='k')
+
+    plt.xlabel('window mid-point', labelpad=15)
+    plt.ylabel('maximum probability of earthquake', labelpad=15)
+    plt.tight_layout()
+    plt.show()
+
+if matching:
+
+    if probabilities:
+
+        # Return start and end times to ISO8601 format
+
+        starttime = str(starttime.isoformat())
+        endtime = str(endtime.isoformat())
+
+    # Parse all data
+
+    magnitude_timeseries_files = glob.glob('./*timeseries.csv')
+    magnitude_timeseries, timeseries_types = parse_data(magnitude_timeseries_files, '_timeseries',
+                                                        starttime, endtime)
+
+    # Do matching
 
     print("Matching events within temporal and spatial distance limits and with the desired magnitude types")
 
     match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
-                     rms_threshold)
+                     show_matching)
 
-# Load event magnitude data from file and do plotting
+# Load magnitude match data
+
 with open('./magnitude_matches_all.csv', 'r') as openfile:
     rc = 0
     for row in openfile:
@@ -573,35 +875,47 @@ with open('./magnitude_matches_all.csv', 'r') as openfile:
 print('Saving plots...')
 
 # Magnitude value plotting
+
 complete_pairs = []
 for n in range(5, len(data_types)):
     for m in range(5, len(data_types)):
-        if n == m or (str(m) + ',' + str(n)) in complete_pairs:
+
+        # Don't repeat plotting
+
+        if n == m or str(m) + ',' + str(n) in complete_pairs:
             continue
+
+        # Build plotting dataset
+
         plt.figure()
         x = []
         y = []
         for k in range(len(datalist[0])):
-            x.append(float(datalist[n][k]))
-            y.append(float(datalist[m][k]))
-        plt.scatter(x, y, s = 1)
+            if datalist[n][k][:3] != 'nan' and datalist[m][k][:3] != 'nan':
+                x.append(float(datalist[n][k]))
+                y.append(float(datalist[m][k]))
+
+        # Plot the data and a reference line for when magnitudes are equivalent at all values
+
+        plt.scatter(x, y, s=2)
+        plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=0.5, alpha=0.5)
+
+        # Do an orthogonal distance regression and plot this overtop of the data, showing the
+        # linear relationship between the magnitudes
+
+        slope, intercept = orthregress(x, y)
+        plt.plot([0, 10], [intercept, slope * 10 + intercept], color='k', linewidth=0.5, alpha=0.5)
+
+        # Add plot features for clarity
+
         plt.xlabel(data_types[n])
         plt.ylabel(data_types[m])
-        plt.grid(which = 'major', axis = 'both', linestyle = '-', alpha = 0.5)
-        plt.xlim(3, 10)
-        plt.ylim(3, 10)
+        plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
+        plt.xlim(2, 10)
+        plt.ylim(2, 10)
+        plt.title('m=' + str(slope)[:5] + ', c=' + str(intercept)[:5], y=1.03)
         plt.gca().set_aspect('equal', adjustable='box')
-        plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format = 'png', dpi = 300)
+        plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format='png', dpi=300)
         plt.close()
 
         complete_pairs.append(str(n) + ',' + str(m))
-
-# # Sort data by alphabetic magnitude type
-#
-# for n in range(len(magnitude_timeseries)):
-#     _, magnitude_timeseries[n] = zip(*sorted(zip(timeseries_types, magnitude_timeseries[n])))
-# timeseries_types.sort()
-#
-# # Generate cumulative sum timeseries for each magnitude and plot it
-#
-# plot_timeseries(magnitude_timeseries, timeseries_types)
