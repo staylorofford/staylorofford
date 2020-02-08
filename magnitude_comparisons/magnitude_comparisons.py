@@ -1,13 +1,20 @@
-from obspy.io.quakeml.core import Unpickler
-import pycurl
+"""
+Compare earthquake magnitudes within or between their representations in earthquake catalogues.
+"""
+
+import datetime
+import earthquake_location
+import glob
 from io import BytesIO
 import math
 import matplotlib.pyplot as plt
-import datetime
-import glob
+from obspy.io.quakeml.core import Unpickler
+import os
+import pycurl
 from scipy.odr import Model, Data, ODR
 
 quakeml_reader = Unpickler()
+
 
 def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                      minlatitude, maxlatitude, starttime = '0000-01-01T00:00:00',
@@ -401,11 +408,73 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                             matched_spatial_lengths.append(spatial_lengths[indices.index(match_idx)])
                             matched_temporal_lengths.append(temporal_lengths[indices.index(match_idx)])
 
-                            datalist[1][event_index] = str(lengths[lengths.index(min(lengths))])
-                            datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
-                            magnitude_timeseries[3][n][k]
-                            datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
-                            magnitude_timeseries[3][m][match_idx]
+                            lengths[0].append(math.sqrt(temporal_length ** 2 + spatial_length ** 2))
+                            lengths[1].append(l)
+
+                        if len(lengths[0]) > 0:
+                            # Search all possible matches and use an earthquake location routine to test
+                            # if the events are representing the same earthquake. The rms threshold value
+                            # is used as a proxy for this.
+
+                            # Sort the length lists
+                            lengths[0], lengths[1] = zip(*sorted(zip(lengths[0], lengths[1])))
+
+                            # Make the event file to use in the earthquake location
+                            event_file = open('temporary_event_file', 'w')
+                            event_file.write('eventID\n' + str(magnitude_timeseries[0][n][k].split('/')[-1]) + '\n')
+                            event_file.close()
+
+                            # Begin the search with the event match with smallest length and end when a match is found
+                            # that meets the rms threshold.
+                            # NOTE: only works for reference catalogue being the GeoNet catalogue currently!
+                            # event_file contains the eventID from the GeoNet catalogue
+                            # test_origins contains the potential match hypocentre and origin time
+                            for l in range(len(lengths[0])):
+                                match_idx = lengths[1][l]
+
+                                test_origins = open('temporary_test_origins', 'w')
+                                test_origins.write('latitude,longitude,depth,origin_time\n' +
+                                                   str(magnitude_timeseries[4][m][match_idx]) + ',' +
+                                                   str(magnitude_timeseries[5][m][match_idx]) + ',' +
+                                                   str(magnitude_timeseries[6][m][match_idx][:-1]) + ',' +
+                                                   str(datetime.datetime.strptime(magnitude_timeseries[1][m][match_idx],
+                                                                                  '%Y-%m-%dT%H:%M:%S.%fZ').isoformat()) +
+                                                   'Z\n')
+                                test_origins.close()
+
+                                # Convert and collate data into format expected by earthquake location code
+                                arrival_time_data, arrival_time_data_header, grid_points, grid_header, test_origins = \
+                                    earthquake_location.parse_files(eventid_file='temporary_event_file',
+                                                                    test_origins='temporary_test_origins',
+                                                                    mode='spherical')
+
+                                # Check arrival time data is non-empty, and if it is, ensure arrival is ignored
+                                if len(arrival_time_data) == 1 and len(arrival_time_data[0]) == 0:
+                                    print('No arrival time data exists for this event! It will produce no match.')
+                                    earthquake_origins, rms_errors = [[0, 0, 0, datetime.datetime.now()], [9999]]
+                                else:  # Otherwise, perform earthquake location
+                                    earthquake_origins, rms_errors = earthquake_location.test_test_origins('grid_search',
+                                                                                                           arrival_time_data,
+                                                                                                           arrival_time_data_header,
+                                                                                                           grid_points,
+                                                                                                           grid_header,
+                                                                                                           test_origins)
+                                rms_error = rms_errors[0]
+                                print('For match_idx ' + str(match_idx) + ' rms error is ' + str(rms_error))
+
+                                if rms_error <= rms_threshold:
+                                    print('Matched event ' + str(magnitude_timeseries[0][n][k]) +
+                                          ' with event at index ' + str(match_idx))
+                                    # Save the data for the match
+                                    datalist[1][event_index] = str(rms_error)
+                                    datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
+                                        magnitude_timeseries[3][n][k]
+                                    datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
+                                        magnitude_timeseries[3][m][match_idx]
+                                    break  # break on the first matching event
+
+                            os.remove('temporary_event_file')
+                            os.remove('temporary_test_origins')
 
                 complete_pairs.append(str(n) + ',' + str(m))
 
@@ -548,7 +617,7 @@ def probability(sample_magnitudes, sample_depths, sample_times,
 
 # Set data gathering parameters
 
-minmagnitude = 5  # minimum event magnitude to get from catalog
+minmagnitude = 4  # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -67, -33  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 145, -175  # minimum and maximum longitude for event search window
 starttime = '2001-05-18T00:00:00'  # event query starttime
@@ -570,8 +639,11 @@ comparison_magnitudes = [['MLv', 'ML', 'mB', 'Mw(mB)', 'M', 'Mw'], ['mww']]
 
 # Set matching parameters
 
-max_dt = 10  # maximum time (s) between events in separate catalogs for them to be considered records of the same earthquake
-max_dist = 10000 # maximum distance (km) "
+max_dt = 100  # maximum time (s) between events in separate catalogs for them to be considered records of
+              # the same earthquake
+max_dist = 1000  # maximum distance (km) "
+rms_threshold = 10  # origin time potential matches must be within (in seconds) when one is relocated using the
+                    # arrival time picks of the other in a spherical Earth grid search.
 
 # Set probability parameters
 
@@ -592,13 +664,13 @@ bin_overlap = 0.9  # percentage each time bin should overlap
 
 build_FDSN_timeseries = False
 build_GeoNet_Mw_timeseries = False
-probabilities = True
-matching = False
+probabilities = False
+matching = True
 show_matching = False
 
 # Build event catalogs from FDSN
 
-if build_FDSN_timeseries == True:
+if build_FDSN_timeseries:
 
     print('\nSearching earthquake catalogs for events above magnitude ' + str(minmagnitude) +
           ' between ' + str(minlatitude) + ' and ' + str(maxlatitude) + ' degrees latitude and ' +
@@ -616,7 +688,7 @@ if build_FDSN_timeseries == True:
 
 # Build GeoNet Mw catalog
 
-if build_GeoNet_Mw_timeseries == True:
+if build_GeoNet_Mw_timeseries:
 
     GeoNet_Mw(minmagnitude, starttime, endtime)
 
@@ -678,7 +750,7 @@ if probabilities:
                       str(p) + ', from ' + str(N) + ' samples over the period ' +
                       str(current_start_time.isoformat()) + ' - ' + str(current_end_time.isoformat()) + '\n')
 
-    # Calculate probability using maximum magnitude for each event
+        # Calculate probability using maximum magnitude for each event
 
         all_events = []
         all_times = []
