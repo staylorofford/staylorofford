@@ -20,7 +20,7 @@ def query_fdsn(station, location, channel, starttime, endtime):
     :param: endtime: UTC end time of desired data (ISO8601 string)
     :return: obspy stream object containing requested data
     """
-    client = Client("https://service-nrt.geonet.org.nz")
+    client = Client("https://service.geonet.org.nz")
     stream = client.get_waveforms(network='NZ',
                                   station=station,
                                   channel=channel,
@@ -31,17 +31,17 @@ def query_fdsn(station, location, channel, starttime, endtime):
 
 
 # Set parameters for which data to analyse using lists of strings
-stations = ['WSRZ']
-locations = ['33']
-channels = ['HDF']
-starttime = '2019-12-13T01:10:00Z'
-endtime = '2019-12-13T01:20:00Z'
-window_length = 100  # Window length to plot in seconds
+stations = ['KHZ', 'WEL', 'GVZ', 'MQZ',  'THZ', 'NNZ', 'INZ']
+locations = ['??']
+channels = ['HHZ']
+starttime = '2017-02-01T10:21:30Z'
+endtime = '2017-02-01T10:23:00Z'
+window_length = 91  # Window length to plot in seconds
 
 # Set how to filter the data, if at all. Use filter_type=None to negate filtering. Filter types are those in obspy.
 filter_type = 'bandpass'
-minimum_frequency = 1/10
-maximum_frequency = 50
+minimum_frequency = 2
+maximum_frequency = 15
 
 # Set whether to plot spectrograms instead of seismograms. Use None to negative spectrogram plotting.
 # Note: if both spectrogram and normalise are true, then time domain waveforms will be plotted over spectrograms.
@@ -143,9 +143,9 @@ while current_time_dt <= end_time_dt:
 
     # Plot the data and overlay reference times if desired
     fig = plt.figure(figsize=(12,9))
-    stream.plot(fig=fig,
-                type='relative',
-                zorder=2)
+    stream.plot(fig=fig)#,
+                # type='relative',
+                # zorder=2)
     for n in range(len(fig.axes)):
         axis = fig.axes[n]
         plotting_stream = axis.texts[0]._text
@@ -155,6 +155,8 @@ while current_time_dt <= end_time_dt:
                           min_max_values[3][min_max_index])
             axis.locator_params(axis='y',
                                 nbins=3)
+            axis.grid(axis='x',
+                      which='both')
             if reference_times:
                 axis.vlines(x=reference_times,
                             ymin=min_max_values[2][min_max_index],
@@ -174,7 +176,6 @@ while current_time_dt <= end_time_dt:
                             linestyles='dashed',
                             colors='red')
     plt.gcf().autofmt_xdate()
-    plt.grid(which='both')
     plt.show()
     plt.savefig(str(window_start) + '_' + str(window_end) + '.png',
                 format='png',
