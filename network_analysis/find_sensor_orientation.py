@@ -152,7 +152,7 @@ def find_lag_time(stream, reference_stream):
     return lag_time
 
 
-def calculate_angle(shifted_seismogram, reference_seismogram)
+def calculate_angle(shifted_seismogram, reference_seismogram):
 
     """
     Calculate the angle between the horizontal components of each sensor and those of the reference sensor.
@@ -206,6 +206,7 @@ if __name__ == "__main__":
         query_stations = stations_to_orient
 
     # For each event, produce the orientation angle for each station
+    all_orientation_angles = []
     for event in events:
         # Query event details from GeoNet FDSN
         event_details = get_event(event)[0]
@@ -249,7 +250,7 @@ if __name__ == "__main__":
             shift_idx = abs(lag_time * streams[m][0].stats.sampling_rate)
             for n in range(len(streams[m])):
                 if lag_time >= 0:
-                    shifted_streams[m][n].data = [float('nan')] * shift_idx +  streams[m][n].data[:shift_idx]
+                    shifted_streams[m][n].data = [float('nan')] * shift_idx + streams[m][n].data[:shift_idx]
                 else:
                     shifted_streams[m][n].data = streams[m][n].data[shift_idx:] + [float('nan') * shift_idx]
 
@@ -291,14 +292,35 @@ if __name__ == "__main__":
         # Perform the orientation angle calculation in the cross-correlation window
         orientation_angles = []
         for m in range(len(shifted_streams)):
+            # Make copies of data streams for shifting
+            trimmed_and_shifted_streams = shifted_streams[m].copy()
+            trimmed_reference_stream = reference_station_stream.copy()
             # Convert window indices to start and end times for stream trimming prior to angle calculation
-            pass
+            window_start = 1 / trimmed_and_shifted_streams[0].stats.sampling_rate * xcorr_window_idx[m][0]
+            window_end = 1 / trimmed_and_shifted_streams[0].stats.sampling_rate * xcorr_window_idx[m][1]
+            # Trim data to window
+            trimmed_and_shifted_streams.trim(starttime=window_start,
+                                             endtime=window_end)
+            trimmed_reference_stream.trim(starttime=window_start,
+                                          endtime=window_end)
             # Calculate angle
-            orientation_angle = calculate_angle(shifted_streams[m][xcorr_window_idx[m][0]:xcorr_window_idx[m][1]], reference_station_stream[m][xcorr_window_idx[m][0]:xcorr_window_idx[m][1]])
+            orientation_angle = calculate_angle(trimmed_and_shifted_streams, trimmed_reference_stream)
             orientation_angles.append(orientation_angle)
 
         # Save orientation angles for the event
-        pass
+        all_orientation_angles.append(orientation_angles)
 
     # Calculate average orientation angle and error from angle distributions
-    pass
+    site_orientation_angles = [[] for n in range(len(query_stations))]
+    for m in range(len(all_orientation_angles)):
+        for n in range(len(all_orientation_angles[m])):
+            site = query_stations[n]
+            site_orientation_angles[n].append(all_orientation_angles[m][n])
+    print('\nNumber of events used for orientation is ' + str(len(events)))
+    for n in range(len(site_orientation_angles)):
+        print('Site is:' + str(query_stations[n]))
+        print('Mean orientation angle is: ' + str(np.mean(site_orientation_angles)))
+        print('Median orientation angle is: ' + str(np.median(site_orientation_angles)))
+        print('Orientation angle mode is: ' + str(np.mode(site_orientation_angles)))
+        print('Orientation angle stdev is: ' + str(np.std(site_orientation_angles)))
+        print('\n')
