@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from obspy.io.quakeml.core import Unpickler
 import os
 import pycurl
+from scipy.stats import gmean
 from scipy.odr import Model, Data, ODR
 
 quakeml_reader = Unpickler()
@@ -128,8 +129,8 @@ def to_cartesian(latitude, longitude, depth):
 
     # Convert to spherical coordinate conventions
     r = Re - depth
-    if latitude < 0:
-        latitude += 180
+    if longitude < 0:
+        longitude += 180
 
     # Convert to cartesian coordinates
     x = r * math.sin(latitude) * math.cos(longitude)
@@ -634,30 +635,30 @@ def probability(sample_magnitudes, sample_depths, sample_times,
 
 # Set data gathering parameters
 
-minmagnitude = 4  # minimum event magnitude to get from catalog
-minlatitude, maxlatitude = -67, -33  # minimum and maximum latitude for event search window
-minlongitude, maxlongitude = 145, -175  # minimum and maximum longitude for event search window
+minmagnitude = 3  # minimum event magnitude to get from catalog
+minlatitude, maxlatitude = -90, 90  # minimum and maximum latitude for event search window
+minlongitude, maxlongitude = 0, -0.001  # western and eastern longitude for event search window
 starttime = '2012-01-01T00:00:00'  # event query starttime
-endtime = '2020-02-01T00:00:00'  # event query endtime, 'now' will set it to the current time
+endtime = '2020-03-01T00:00:00'  # event query endtime, 'now' will set it to the current time
 
 if endtime == 'now':
     endtime = str(datetime.datetime.now().isoformat())[:19]
 
 # Define catalogs and their associated FDSN webservice event URL
-catalog_names = ['GeoNet_catalog', 'USGS_catalog']
-services = ["https://service.geonet.org.nz/fdsnws/event/1/", "https://earthquake.usgs.gov/fdsnws/event/1/"]
+catalog_names = ['GeoNet_catalog', 'GeoNet_catalog'] #'USGS_catalog']
+services = ["https://service.geonet.org.nz/fdsnws/event/1/", "https://service.geonet.org.nz/fdsnws/event/1/"] #"https://earthquake.usgs.gov/fdsnws/event/1/"]
 catalogs = [[] for i in range(len(catalog_names))]
 
 # Define comparison magnitudes: first nested list is from GeoNet catalog, second if from USGS
 # Code will do all combinations across the two catalogs
-comparison_magnitudes = [['Mw(mB)'], ['mww']]
+comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']] #['mww']]
 
 # Set matching parameters
 
 max_dt = 100  # maximum time (s) between events in separate catalogs for them to be considered records of
               # the same earthquake
 max_dist = 1000  # maximum distance (km) "
-rms_threshold = 10  # origin time potential matches must be within (in seconds) when one is relocated using the
+rms_threshold = 5  # origin time potential matches must be within (in seconds) when one is relocated using the
                     # arrival time picks of the other in a spherical Earth grid search.
 
 # Set probability parameters
@@ -867,27 +868,55 @@ print('Saving plots...')
 
 complete_pairs = []
 for n in range(5, len(data_types)):
+    # Ensure reference magnitudes are only ever on the y-axis
+    if data_types[n] not in comparison_magnitudes[0]:
+        continue
     for m in range(5, len(data_types)):
+        # Ensure comparison magnitudes are only ever on the x-axis
+        if data_types[m] not in comparison_magnitudes[1]:
+            continue
 
         # Don't repeat plotting
-
         if n == m or str(m) + ',' + str(n) in complete_pairs:
             continue
 
         # Build plotting dataset
-
         plt.figure()
-        x = []
+        x, xdec = [], []
         y = []
         for k in range(len(datalist[0])):
             if datalist[n][k][:3] != 'nan' and datalist[m][k][:3] != 'nan':
-                x.append(float(datalist[n][k]))
-                y.append(float(datalist[m][k]))
+                x.append(float(datalist[m][k]))
+                xdec.append(round(float(datalist[m][k]), 1))
+                y.append(float(datalist[n][k]))
 
-        # Plot the data and a reference line for when magnitudes are equivalent at all values
+        # Plot the data
+        plt.scatter(x, y, s=1)
 
-        plt.scatter(x, y, s=2)
+        # Bin the y data to the corresponding x data and plot the mean value in each bin with size propotional
+        # to number of data in the bin.
+        x_vals = list(set(xdec))
+        binned_yvals = [[] for l in range(len(x_vals))]
+        for l in range(len(xdec)):
+            x_idx = x_vals.index(xdec[l])
+            binned_yvals[x_idx].append(y[l])
+        mean_yvals = [0] * len(binned_yvals)
+        n_yvals = [0] * len(binned_yvals)
+        for l in range(len(binned_yvals)):
+            mean_yvals[l] = gmean(binned_yvals[l])
+            n_yvals[l] = len(binned_yvals[l])
+        n_tot = sum(n_yvals)
+        plt.scatter(x_vals, mean_yvals, s=n_yvals, edgecolors='k', linewidths=1)
+
+        # Plot a line showing the 1:1 magnitude relationship for reference
+
         plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=0.5, alpha=0.5)
+
+        # Do an orthogonal distance regression and plot this overtop of the data, showing the
+        # linear relationship between the magnitudes
+
+        slope, intercept = orthregress(x, y)
+        plt.plot([0, 10], [intercept, slope * 10 + intercept], color='k', linewidth=0.5, alpha=0.5)
 
         # Do an orthogonal distance regression and plot this overtop of the data, showing the
         # linear relationship between the magnitudes
@@ -897,12 +926,12 @@ for n in range(5, len(data_types)):
 
         # Add plot features for clarity
 
-        plt.xlabel(data_types[n])
-        plt.ylabel(data_types[m])
+        plt.xlabel(data_types[m])
+        plt.ylabel(data_types[n])
         plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
         plt.xlim(2, 10)
         plt.ylim(2, 10)
-        plt.title('m=' + str(slope)[:5] + ', c=' + str(intercept)[:5], y=1.03)
+        plt.title('m=' + str(slope)[:5] + ', c=' + str(intercept)[:5] + ', N=' + str(n_tot), y=1.03)
         plt.gca().set_aspect('equal', adjustable='box')
         plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format='png', dpi=300)
         plt.close()
