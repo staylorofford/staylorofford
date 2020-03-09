@@ -83,7 +83,7 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                     print('Assuming query failed because no events exist at high magnitude range')
                     successes += 1
                 else:
-                    factor += 999  # Only fails for huge datasets, so try minimise the size of the first new query
+                    factor += 10  # Only fails for huge datasets, so try minimise the size of the first new query
                     break
 
         if successes == len(magnitude_limits) - 1:
@@ -296,7 +296,7 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
     """
 
     # Build column types for output csv (columns)
-    columns = ['eventID', 'RMS_error', 'latitude', 'longitude', 'depth']
+    columns = ['eventID', 'matchID', 'RMS_error', 'latitude', 'longitude', 'depth']
     magnitudes_columns = []
     for magnitude_type in timeseries_types:
         magnitudes_columns.append(magnitude_type.split('_')[-1])
@@ -320,10 +320,11 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
             try:
                 event_index = event_list.index(magnitude_timeseries[0][n][k])
                 datalist[0][event_index] = magnitude_timeseries[0][n][k]
-                datalist[1][event_index] = '0'  # Length 0 for internal matches: external matches will overwrite
-                datalist[2][event_index] = magnitude_timeseries[4][n][k]
-                datalist[3][event_index] = magnitude_timeseries[5][n][k]
-                datalist[4][event_index] = str(float(magnitude_timeseries[6][n][k]))  # Remove trailing newline
+                datalist[2][event_index] = None  # Begin with no match
+                datalist[2][event_index] = '0'  # Length 0 for internal matches: external matches will overwrite
+                datalist[3][event_index] = magnitude_timeseries[4][n][k]
+                datalist[4][event_index] = magnitude_timeseries[5][n][k]
+                datalist[5][event_index] = str(float(magnitude_timeseries[6][n][k]))  # Remove trailing newline
             except: # Fails when the event is not from the non-reference catalog
                 pass
 
@@ -361,6 +362,24 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                         # We have one of our second sets of comparison magnitudes
                     for k in range(len(magnitude_timeseries[0][n])):
                         event_index = event_list.index(magnitude_timeseries[0][n][k])
+                        # Check to see if the event has already been matched
+                        if datalist[1][event_index]:
+                            # If it has, skip the matching routine and save the new data
+                            try:
+                                match_idx = magnitude_timeseries[0][m].index(datalist[1][event_index])
+                                print('Match exists already for event ' + str(magnitude_timeseries[0][n][k]) +
+                                      '. This event has been matched with event at index ' + str(match_idx))
+                                datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
+                                    magnitude_timeseries[3][n][k]
+                                datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
+                                    magnitude_timeseries[3][m][match_idx]
+                                continue
+                            except ValueError:
+                                # This will occur if a match exists, but that event does not have the magnitude of
+                                # the current type. The code will produce magnitudes from two different events within
+                                # the same RMS error threshold! Or perhaps only for the former if the latter does not
+                                # fall within the threshold.
+                                pass
 
                         # Calculate 2D length between event and reference events for matching criteria
 
@@ -368,6 +387,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                         spatial_lengths = []
                         lengths = []
                         indices = []
+                        if magnitude_timeseries[6][n][k][:4] == 'None':  # Ignore events with no depth
+                            continue
                         ETi, ELa, ELo, EDe = [datetime.datetime.strptime(magnitude_timeseries[1][n][k], 
                                                                          '%Y-%m-%dT%H:%M:%S.%fZ'),
                                               float(magnitude_timeseries[4][n][k]), 
@@ -376,6 +397,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                         Ex, Ey, Ez = to_cartesian(ELa, ELo, EDe)
 
                         for l in range(len(magnitude_timeseries[0][m])):
+                            if magnitude_timeseries[6][m][l][:4] == 'None':  # Ignore events with no depth
+                                continue
                             RETi, RELa, RELo, REDe = [datetime.datetime.strptime(magnitude_timeseries[1][m][l],
                                                                                  '%Y-%m-%dT%H:%M:%S.%fZ'),
                                                       float(magnitude_timeseries[4][m][l]),
@@ -457,7 +480,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                                     print('Matched event ' + str(magnitude_timeseries[0][n][k]) +
                                           ' with event at index ' + str(match_idx))
                                     # Save the data for the match
-                                    datalist[1][event_index] = str(rms_error)
+                                    datalist[1][event_index] = magnitude_timeseries[0][m][match_idx]
+                                    datalist[2][event_index] = str(rms_error)
                                     datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
                                         magnitude_timeseries[3][n][k]
                                     datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
@@ -635,23 +659,23 @@ def probability(sample_magnitudes, sample_depths, sample_times,
 
 # Set data gathering parameters
 
-minmagnitude = 3  # minimum event magnitude to get from catalog
+minmagnitude = 6  # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -90, 90  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 0, -0.001  # western and eastern longitude for event search window
 starttime = '2012-01-01T00:00:00'  # event query starttime
-endtime = '2020-03-01T00:00:00'  # event query endtime, 'now' will set it to the current time
+endtime = '2021-01-01T00:00:00' #'2020-03-01T00:00:00'  # event query endtime, 'now' will set it to the current time
 
 if endtime == 'now':
     endtime = str(datetime.datetime.now().isoformat())[:19]
 
 # Define catalogs and their associated FDSN webservice event URL
-catalog_names = ['GeoNet_catalog', 'GeoNet_catalog'] #'USGS_catalog']
-services = ["https://service.geonet.org.nz/fdsnws/event/1/", "https://service.geonet.org.nz/fdsnws/event/1/"] #"https://earthquake.usgs.gov/fdsnws/event/1/"]
+catalog_names = ['GeoNet_catalog', 'USGS_catalog'] #'GeoNet_catalog']
+services = ["https://service.geonet.org.nz/fdsnws/event/1/", "https://earthquake.usgs.gov/fdsnws/event/1/"] # "https://service.geonet.org.nz/fdsnws/event/1/"]
 catalogs = [[] for i in range(len(catalog_names))]
 
 # Define comparison magnitudes: first nested list is from GeoNet catalog, second if from USGS
 # Code will do all combinations across the two catalogs
-comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']] #['mww']]
+comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
 
 # Set matching parameters
 
@@ -677,8 +701,8 @@ bin_overlap = 0.9  # percentage each time bin should overlap
 # this, and this data should not be included in a long-term dataset trying to determine likelihood of earthquakes!
 
 # Set what level of processing you want the script to do
-build_FDSN_timeseries = True
-build_GeoNet_Mw_timeseries = True
+build_FDSN_timeseries = False
+build_GeoNet_Mw_timeseries = False
 probabilities = False
 matching = True
 show_matching = False
