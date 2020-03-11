@@ -5,17 +5,20 @@ Script to find a sensor's orientation using teleseismic events.
 import datetime
 import io
 import math
+import matplotlib.pyplot as plt
 import numpy as np
+import numpy.ma as ma
 import obspy
 from obspy.clients.fdsn import Client
 from obspy.io.quakeml.core import Unpickler
 import os
 import pycurl
+import scipy
 
 quakeml_reader = Unpickler()
 
 
-def parse_csv(csv_path):
+def parse_csv(csv_path, header=True):
 
     """
     Parse the contents of CSV file at csv_path into nested lists
@@ -25,14 +28,19 @@ def parse_csv(csv_path):
 
     data = []
     with open(csv_path, 'r') as openfile:
-        rc = -1
-        for row in openfile:
-            if rc == -1:
-                header = row[:-1].split(',')
-                rc = 0
-            else:
+        if header:
+            rc = -1
+            for row in openfile:
+                if rc == -1:
+                    header = row[:-1].split(',')
+                    rc = 0
+                else:
+                    data.append(row[:-1].split(','))
+            return header, data
+        else:
+            for row in openfile:
                 data.append(row[:-1].split(','))
-    return header, data
+            return data
 
 
 def curl(curlstr):
@@ -61,7 +69,7 @@ def get_event(eventID):
     :return: FDSN event
     """
 
-    query = "https://service.geonet.org.nz/fdsnws/dataselect/1/query?network=NZ&" + eventID
+    query = "https://service.geonet.org.nz/fdsnws/event/1/query?eventid=" + eventID
     queryresult = curl(query)
     event = quakeml_reader.loads(queryresult)
     return event
@@ -87,8 +95,8 @@ def query_fdsn(station, location, channel, starttime, endtime):
                                   channel=channel,
                                   location=location,
                                   starttime=starttime,
-                                  endtime=endtime,
-                                  attach_response=True)
+                                  endtime=endtime),
+                                  # attach_response=True)
     return stream
 
 
@@ -109,7 +117,10 @@ def calculate_horizontal_total_energy(stream):
     # Calculate horizontal total energy waveform
     hte_waveform = []
     for m in range(len(stream[0].data)):
-        hte_waveform.append(stream[0].data[m] ** 2 + stream[1].data[m] ** 2)
+        try:
+            hte_waveform.append(stream[0].data[m] ** 2 + stream[1].data[m] ** 2)
+        except TypeError:
+            hte_waveform.append(np.nan)
     return hte_waveform
 
 
@@ -125,16 +136,35 @@ def find_lag_time(stream, reference_stream):
 
     # Calculate horizontal total energy waveforms
     hte_waveform = calculate_horizontal_total_energy(stream)
+    norm_value = np.nanmax(hte_waveform)
+    hte_waveform /= norm_value
     hte_reference_waveform = calculate_horizontal_total_energy(reference_stream)
+    norm_value = np.nanmax(hte_reference_waveform)
+    hte_reference_waveform /= norm_value
 
     # Find the lag time from the maximum cross-correlation value between the two waveforms
     xcorr_values = []
     for m in range(len(hte_waveform)):
         # Shift the non-reference waveform temporally
-        shifted_hte_waveform = [float('nan')] * m + hte_waveform[:m]
+        if m == 0:
+            shifted_hte_waveform = hte_waveform
+        else:
+            shifted_hte_waveform = np.asarray([float('nan')] * m + hte_waveform[:-m].tolist())
+
+        # Check that at least 1 second of data overlaps
+        num_samples = 0
+        for n in range(len(shifted_hte_waveform)):
+            if not np.isnan(shifted_hte_waveform[n]) and not np.isnan(hte_reference_waveform[n]):
+                num_samples += 1
+        if num_samples <= stream[0].stats.sampling_rate:
+            continue
+
         # Cross-correlate the waveforms
-        xcorr_value = sum(np.correlate(shifted_hte_waveform, hte_reference_waveform))
+        a = ma.masked_invalid(shifted_hte_waveform)
+        b = ma.masked_invalid(hte_reference_waveform)
+        xcorr_value = ma.corrcoef(a, b)[0][1]
         xcorr_values.append(xcorr_value)
+
     max_xcorr_value = max(xcorr_values)
     lag_time = (1 / stream[0].stats.sampling_rate) * xcorr_values.index(max_xcorr_value)
 
@@ -142,10 +172,25 @@ def find_lag_time(stream, reference_stream):
     xcorr_values = []
     for m in range(len(hte_waveform)):
         # Shift the non-reference waveform temporally
-        shifted_hte_waveform = hte_waveform[m:] + [float('nan')] * m
+        if m == 0:
+            shifted_hte_waveform = hte_waveform
+        else:
+            shifted_hte_waveform = np.asarray(hte_waveform[m:].tolist() + [float('nan')] * m)
+
+        # Check that at least 1 second of data overlaps
+        num_samples = 0
+        for n in range(len(shifted_hte_waveform)):
+            if not np.isnan(shifted_hte_waveform[n]) and not np.isnan(hte_reference_waveform[n]):
+                num_samples += 1
+        if num_samples <= stream[0].stats.sampling_rate:
+            continue
+
         # Cross-correlate the waveforms
-        xcorr_value = sum(np.correlate(shifted_hte_waveform, hte_reference_waveform))
+        a = ma.masked_invalid(shifted_hte_waveform)
+        b = ma.masked_invalid(hte_reference_waveform)
+        xcorr_value = ma.corrcoef(a, b)[0][1]
         xcorr_values.append(xcorr_value)
+
     if max(xcorr_values) > max_xcorr_value:
         lag_time = (-1 / stream[0].stats.sampling_rate) * xcorr_values.index(max(xcorr_values))
 
@@ -167,14 +212,17 @@ def calculate_angle(shifted_seismogram, reference_seismogram):
     numerator = 0
     denominator = 0
     for m in range(len(reference_seismogram)):  # Reference and shifted seismograms should have the same length
-        numerator += ((reference_seismogram[m][0] * shifted_seismogram[m][0]) +
-                      (reference_seismogram[m][1] * shifted_seismogram[m][1]))
-        denominator += ((reference_seismogram[m][1] * shifted_seismogram[m][0]) -
-                        (reference_seismogram[m][0] * shifted_seismogram[m][1]))
+        try:
+            numerator += ((reference_seismogram[m][0] * shifted_seismogram[m][0]) +
+                          (reference_seismogram[m][1] * shifted_seismogram[m][1]))
+            denominator += ((reference_seismogram[m][1] * shifted_seismogram[m][0]) -
+                            (reference_seismogram[m][0] * shifted_seismogram[m][1]))
+        except TypeError:  # Catch when nan values exist and skip operations for such data
+            continue
     ratio = numerator / denominator
 
     # Now, calculate the relative angle from the inverse-tangent of the ratio
-    relative_angle = math.atan(ratio)
+    relative_angle = math.degrees(math.atan(ratio))
     return relative_angle
 
 
@@ -194,13 +242,13 @@ if __name__ == "__main__":
         print(parameters[n] + ' = ' + values[n])
 
     # Parse files from paths given in config file
-    stations_to_orient = parse_csv(values[parameters.index('station_file')])
-    events = parse_csv(values[parameters.index('eventid_file')])
+    stations_to_orient = parse_csv(values[parameters.index('station_file')], header=False)[0]
+    events = parse_csv(values[parameters.index('eventid_file')], header=False)[0]
 
     # Define list of stations to query data from FDSN for
     query_stations = []
-    if values[parameters.index('reference_stations')] not in stations_to_orient:
-        query_stations.append(values[parameters.index('reference_stations')])
+    if values[parameters.index('reference_station')] not in stations_to_orient:
+        query_stations.append(values[parameters.index('reference_station')])
         query_stations.extend(stations_to_orient)
     else:
         query_stations = stations_to_orient
@@ -210,49 +258,77 @@ if __name__ == "__main__":
     for event in events:
         # Query event details from GeoNet FDSN
         event_details = get_event(event)[0]
-        start_time = event_details.origins[0].time.datetime
-        # Assume event duration does not exceed 5 minutes at any station
-        end_time = start_time + datetime.datetime.timedelta(seconds=300)
+        for pick in event_details.picks:
+            if '.' + values[parameters.index('reference_station')] + '.' in str(pick.resource_id):
+                start_time = pick.time.datetime - datetime.timedelta(seconds=10)
+        # Assume event duration does not exceed 2 minutes at any station
+        end_time = start_time + datetime.timedelta(seconds=130)
 
         # Query waveform data from GeoNet FDSN for each station between the start and end times defined for the event
         stations = []
         streams = []
+        min_times, max_times = [], []
         for station in query_stations:
             stations.append(station)
             station_stream = query_fdsn(station,
                                         '??',
                                         values[parameters.index('channels')],
-                                        start_time,
-                                        end_time)
+                                        start_time.isoformat(),
+                                        end_time.isoformat())[0]
             # Remove instrument response so seismograms are sensor-independent
-            station_stream.remove_response(output='VEL')
+            # station_stream.remove_response(output='VEL')
 
             # Resample stream if sampling rate is not equal to that desired
             if station_stream[0].stats.sampling_rate != values[parameters.index('sampling_rate')]:
                 for trace in station_stream:
-                    trace.resample(sampling_rate=values[parameters.index('sampling_rate')])
+                    trace.resample(sampling_rate=int(values[parameters.index('sampling_rate')]))
+                    min_times.append(trace.stats.starttime)
+                    max_times.append(trace.stats.endtime)
 
             # Low pass the waveforms of all events to increase waveform similarly at all sensors:
             # Filter corner frequency satisfies the condition that it is much smaller than the lowest seismic velocity in the
             # propagation medium of all events scaled by the linear distance between each pair of sensors
             station_stream.filter(type='lowpass',
-                                  freq=values[parameters.index('corner_frequency')])
+                                  freq=float(values[parameters.index('corner_frequency')]))
+
             streams.append(station_stream)
+
+        # Pad out traces to ensure an equal number of data in each
+        for stream in streams:
+            stream.trim(starttime=min(min_times),
+                        endtime=max(max_times),
+                        pad=True,
+                        fill_value=None)
+
         reference_station_idx = stations.index(values[parameters.index('reference_station')])
+        stations.pop(reference_station_idx)
         reference_station_stream = streams.pop(reference_station_idx)
+
+        # plt.plot(reference_station_stream[0].data, color='b')
+        # plt.plot(streams[0][0].data, alpha=0.4, color='r')
+        # plt.show()
 
         # Align all seismograms for each event to facilitate cross-correlation:
         # Use the lag time that produces the maximum cross-correlation value between each sensor and the reference sensor's
         # total energy traces (sum of squares of horizontal seismograms).
+        nandices = [0, None]
         shifted_streams = streams.copy()
         for m in range(len(streams)):
             lag_time = find_lag_time(streams[m], reference_station_stream)
-            shift_idx = abs(lag_time * streams[m][0].stats.sampling_rate)
+            shift_idx = int(abs(lag_time * streams[m][0].stats.sampling_rate))
             for n in range(len(streams[m])):
                 if lag_time >= 0:
-                    shifted_streams[m][n].data = [float('nan')] * shift_idx + streams[m][n].data[:shift_idx]
+                    nandices[0] = shift_idx
+                    shifted_streams[m][n].data = np.asarray([float('nan')] * shift_idx +
+                                                            streams[m][n].data[:shift_idx].tolist())
                 else:
-                    shifted_streams[m][n].data = streams[m][n].data[shift_idx:] + [float('nan') * shift_idx]
+                    nandices[1] = len(streams[m][n].data) - shift_idx
+                    shifted_streams[m][n].data = np.asarray(streams[m][n].data[shift_idx:].tolist() +
+                                                            [float('nan')] * shift_idx)
+
+        plt.plot(reference_station_stream[0].data, color='b')
+        plt.plot(shifted_streams[0][0].data, alpha=0.4, color='r')
+        plt.show(block=False)
 
         # Find the time window of each event for which the correlation of the horizontal waveforms at the sensors is highest:
         # This window is that for which the normalised cross-correlation of the total energy traces of each sensor pair is
@@ -263,30 +339,54 @@ if __name__ == "__main__":
         for m in range(len(shifted_streams)):
             shifted_stream_horizontal_total_energy_waveform = calculate_horizontal_total_energy(shifted_streams[m])
             # Initiate one loop to work through each possible start time in the waveform
-            normalised_xcorr_values = [[[] for x in range(len(reference_horizontal_total_energy_waveform))]
+            normalised_xcorr_values = [([0] * len(reference_horizontal_total_energy_waveform))
                                        for y in range(len(shifted_stream_horizontal_total_energy_waveform))]
-            for n in range(len(shifted_stream_horizontal_total_energy_waveform)):
+            for n in range(nandices[0], len(shifted_stream_horizontal_total_energy_waveform)):
+                if nandices[1] and o > nandices[1]:  # Don't do cross-correlation past the data
+                    break
                 # Initiate a second loop to work through each possible end time in the waveform,
-                # so that all possible windows are tested.
-                for o in range(len(shifted_stream_horizontal_total_energy_waveform)):
+                # so that all possible windows are tested, BUT require that windows are at least 1 second in length.
+                for o in range(n + int(shifted_streams[m][0].stats.sampling_rate) + 1,
+                               len(reference_horizontal_total_energy_waveform)):
+                    if nandices[1] and o > nandices[1]:  # Don't do cross-correlation past the data
+                        break
                     # Calculate mean, variance for data in the given window
                     x_mean = np.nanmean(shifted_stream_horizontal_total_energy_waveform[n:o])
                     y_mean = np.nanmean(reference_horizontal_total_energy_waveform[n:o])
                     x_var = np.nanvar(shifted_stream_horizontal_total_energy_waveform[n:o])
                     y_var = np.nanvar(reference_horizontal_total_energy_waveform[n:o])
+                    if np.isnan(x_mean) or np.isnan(y_mean) or np.isnan(x_var) or np.isnan(y_var):
+                        continue
                     # Iterate through all values in the given window
                     sum = 0
                     for p in range(o - n):
-                        sum += ((shifted_stream_horizontal_total_energy_waveform[p] - x_mean) *
-                                (reference_horizontal_total_energy_waveform[p] - y_mean))
+                        if (np.isnan(shifted_stream_horizontal_total_energy_waveform[n + p]) or
+                                ma.is_masked(shifted_stream_horizontal_total_energy_waveform[n + p]) or
+                                np.isnan(reference_horizontal_total_energy_waveform[n + p]) or
+                                ma.is_masked(reference_horizontal_total_energy_waveform[n + p])):
+                            continue
+                        sum += ((shifted_stream_horizontal_total_energy_waveform[n + p] - x_mean) *
+                                (reference_horizontal_total_energy_waveform[n + p] - y_mean))
                     normalised_xcorr_value = (1 / len(shifted_stream_horizontal_total_energy_waveform[n:o]) *
                                               sum / math.sqrt(x_var * y_var))
                     # Store normalised cross-correlation values in a nested list where the first index is the window
                     # start index and the second index is the window end index.
                     normalised_xcorr_values[n][o] = normalised_xcorr_value
-            normalised_xcorr_values = np.array(normalised_xcorr_values)  # Convert to numpy array to use numpy functions
-            max_normalised_xcorr_value = np.nanmax(normalised_xcorr_values)
-            max_normalised_xcorr_value_idx = np.unravel_index(max_normalised_xcorr_value, normalised_xcorr_values.shape)
+            if np.nanmax(normalised_xcorr_values) == 0:
+                print('Seismograms failed to find any suitable correlation window!')
+                exit()
+            normalised_xcorr_values = np.asarray(normalised_xcorr_values)
+            max_normalised_xcorr_value_idx = np.unravel_index(np.nanargmax(normalised_xcorr_values),
+                                                              normalised_xcorr_values.shape)
+            print('For station ' + stations[m] + ' maximum normalised cross-correlation value occurs between samples ' +
+                  str(max_normalised_xcorr_value_idx[0]) + '-' + str(max_normalised_xcorr_value_idx[1]) +
+                  ' in the aligned data')
+            if nandices[0] > max_normalised_xcorr_value_idx[0]:
+                print('There are ' + str(nandices[0] - max_normalised_xcorr_value_idx[0]) +
+                      ' NaN values at the front of the cross-correlation window in the aligned data')
+            if nandices[1] and nandices[1] < max_normalised_xcorr_value_idx[1]:
+                print('There are ' + str(max_normalised_xcorr_value_idx[1] - nandices[1]) +
+                      ' NaN values at the end of the cross-correlation window in the aligned data')
             xcorr_window_idx.append(max_normalised_xcorr_value_idx)
 
         # Perform the orientation angle calculation in the cross-correlation window
@@ -296,8 +396,10 @@ if __name__ == "__main__":
             trimmed_and_shifted_streams = shifted_streams[m].copy()
             trimmed_reference_stream = reference_station_stream.copy()
             # Convert window indices to start and end times for stream trimming prior to angle calculation
-            window_start = 1 / trimmed_and_shifted_streams[0].stats.sampling_rate * xcorr_window_idx[m][0]
-            window_end = 1 / trimmed_and_shifted_streams[0].stats.sampling_rate * xcorr_window_idx[m][1]
+            window_start = trimmed_and_shifted_streams[0].stats.starttime + \
+                           (1 / trimmed_and_shifted_streams[0].stats.sampling_rate * xcorr_window_idx[m][0])
+            window_end = trimmed_and_shifted_streams[0].stats.starttime + \
+                         (1 / trimmed_and_shifted_streams[0].stats.sampling_rate * xcorr_window_idx[m][1])
             # Trim data to window
             trimmed_and_shifted_streams.trim(starttime=window_start,
                                              endtime=window_end)
@@ -311,16 +413,16 @@ if __name__ == "__main__":
         all_orientation_angles.append(orientation_angles)
 
     # Calculate average orientation angle and error from angle distributions
-    site_orientation_angles = [[] for n in range(len(query_stations))]
+    site_orientation_angles = [[] for n in range(len(stations))]
     for m in range(len(all_orientation_angles)):
         for n in range(len(all_orientation_angles[m])):
-            site = query_stations[n]
+            site = stations[n]
             site_orientation_angles[n].append(all_orientation_angles[m][n])
     print('\nNumber of events used for orientation is ' + str(len(events)))
     for n in range(len(site_orientation_angles)):
-        print('Site is:' + str(query_stations[n]))
-        print('Mean orientation angle is: ' + str(np.mean(site_orientation_angles)))
-        print('Median orientation angle is: ' + str(np.median(site_orientation_angles)))
-        print('Orientation angle mode is: ' + str(np.mode(site_orientation_angles)))
-        print('Orientation angle stdev is: ' + str(np.std(site_orientation_angles)))
+        print('Site is: ' + str(stations[n]))
+        print('Mean orientation angle is: ' + str(np.mean(site_orientation_angles[n])))
+        print('Median orientation angle is: ' + str(np.median(site_orientation_angles[n])))
+        print('Orientation angle mode is: ' + str(scipy.stats.mode(site_orientation_angles[n])))
+        print('Orientation angle stdev is: ' + str(np.std(site_orientation_angles[n])))
         print('\n')
