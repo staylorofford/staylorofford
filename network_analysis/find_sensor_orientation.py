@@ -14,6 +14,7 @@ from obspy.io.quakeml.core import Unpickler
 import os
 import pycurl
 import scipy
+from scipy.fftpack import hilbert
 
 quakeml_reader = Unpickler()
 
@@ -100,6 +101,102 @@ def query_fdsn(station, location, channel, starttime, endtime):
     return stream
 
 
+def calculate_envelope(waveform):
+
+    """
+    Find the amplitude envelope for a waveform. Waveform can be in a numpy masked array.
+    :param waveform: waveform data in a list, numpy array, or numpy masked array
+    :return: amplitude envelope of data, including masks if input
+    """
+
+    # Find period of data with no mask values and calculate the envelope for this data
+    maskdices = [None, None]
+    for n in range(len(waveform) - 1):
+        if ma.is_masked(waveform[n]) and not ma.is_masked(waveform[n + 1]):
+            maskdices[0] = n + 1
+    for n in range(1, len(waveform)):
+        if ma.is_masked(waveform[n]) and not ma.is_masked(waveform[n - 1]):
+            maskdices[1] = n
+    if maskdices[0] is not None and maskdices[1] is not None:
+        hilb = hilbert(waveform[maskdices[0]:maskdices[1]])
+        waveform_envelope = (waveform[maskdices[0]:maskdices[1]] ** 2 + hilb ** 2) ** 0.5
+        waveform[maskdices[0]:maskdices[1]] = waveform_envelope
+    elif maskdices[0] is not None:
+        hilb = hilbert(waveform[maskdices[0]:])
+        waveform_envelope = (waveform[maskdices[0]:] ** 2 + hilb ** 2) ** 0.5
+        waveform[maskdices[0]:] = waveform_envelope
+    else:
+        hilb = hilbert(waveform)
+        waveform_envelope = (waveform ** 2 + hilb ** 2) ** 0.5
+        waveform = waveform_envelope
+    return waveform
+
+
+def find_lag_time(stream, reference_stream):
+
+    """
+    Find the lag time between a given stream and a reference stream using cross-correlation of the vertical traces.
+    :param stream: obspy stream object of the seismogram to calculate lag time for
+    :param reference_stream: object stream object of the seismogram to use as reference for lag time calculation
+    :return: lag time between the two sensors in seconds relative to the reference stream
+    """
+
+    print(stream, reference_stream)
+
+    # Get vertical component data
+    for tr in stream:
+        if tr.stats.channel[-1] == 'Z':
+            stream_z = tr.data
+    for tr in reference_stream:
+        if tr.stats.channel[-1] == 'Z':
+            ref_z = tr.data
+
+    # Create normalised amplitude envelopes of the data
+    stream_envelope = calculate_envelope(stream_z)
+    max_se = ma.max(stream_envelope)
+    stream_envelope /= max_se
+    ref_envelope = calculate_envelope(ref_z)
+    max_re = ma.max(ref_envelope)
+    ref_envelope /= max_re
+
+    plt.plot(ref_envelope, color='b')
+    plt.plot(stream_envelope, color='r', alpha=0.4)
+    plt.show()
+
+    # Find the lag time from the maximum cross-correlation value between the two waveforms
+    xcorr_values = []
+    ref_envelope = ref_envelope.tolist() + len(stream_envelope) * [float('nan')]
+    for m in range(2 * len(stream_envelope)):
+
+        # Shift the stream
+        if m <= len(stream_envelope):
+            shifted_stream_envelope = (len(stream_envelope) - m) * [float('nan')] + \
+                                      stream_envelope.filled(float('nan')).tolist() + \
+                                      m * [float('nan')]
+        else:
+            shifted_stream_envelope = max(0, len(stream_envelope) - m) * [float('nan')] + \
+                                      stream_envelope[:len(stream_envelope) - m].filled(float('nan')).tolist() + \
+                                      m * [float('nan')]
+
+        # Perform cross-correlation
+        xcorr_value = ma.corrcoef(shifted_stream_envelope, ref_envelope)[0][1]
+        xcorr_values.append(xcorr_value)
+
+    # Find lag time from highest cross-correlation value
+    max_xcorr_value = max(xcorr_values)
+    print(xcorr_values)
+    print(max_xcorr_value)
+    lag_time = (1 / stream[0].stats.sampling_rate) * (len(stream_envelope) - xcorr_values.index(max_xcorr_value))
+
+    print(lag_time)
+    plt.plot(ref_envelope, color='b')
+    plt.plot(stream_envelope, color='r', alpha=1)
+    plt.plot(xcorr_values, color='purple', alpha=1)
+    plt.show()
+
+    return lag_time
+
+
 def calculate_horizontal_total_energy(stream):
 
     """
@@ -122,79 +219,6 @@ def calculate_horizontal_total_energy(stream):
         except TypeError:
             hte_waveform.append(np.nan)
     return hte_waveform
-
-
-def find_lag_time(stream, reference_stream):
-
-    """
-    Find the lag time between a given stream and a reference stream using cross-correlation of the horizontal total
-    energy trace in each stream.
-    :param stream: obspy stream object of the seismogram to calculate lag time for
-    :param reference_stream: object stream object of the seismogram to use as reference for lag time calculation
-    :return: lag time between the two sensors in seconds relative to the reference stream
-    """
-
-    # Calculate horizontal total energy waveforms
-    hte_waveform = calculate_horizontal_total_energy(stream)
-    norm_value = np.nanmax(hte_waveform)
-    hte_waveform /= norm_value
-    hte_reference_waveform = calculate_horizontal_total_energy(reference_stream)
-    norm_value = np.nanmax(hte_reference_waveform)
-    hte_reference_waveform /= norm_value
-
-    # Find the lag time from the maximum cross-correlation value between the two waveforms
-    xcorr_values = []
-    for m in range(len(hte_waveform)):
-        # Shift the non-reference waveform temporally
-        if m == 0:
-            shifted_hte_waveform = hte_waveform
-        else:
-            shifted_hte_waveform = np.asarray([float('nan')] * m + hte_waveform[:-m].tolist())
-
-        # Check that at least 1 second of data overlaps
-        num_samples = 0
-        for n in range(len(shifted_hte_waveform)):
-            if not np.isnan(shifted_hte_waveform[n]) and not np.isnan(hte_reference_waveform[n]):
-                num_samples += 1
-        if num_samples <= stream[0].stats.sampling_rate:
-            continue
-
-        # Cross-correlate the waveforms
-        a = ma.masked_invalid(shifted_hte_waveform)
-        b = ma.masked_invalid(hte_reference_waveform)
-        xcorr_value = ma.corrcoef(a, b)[0][1]
-        xcorr_values.append(xcorr_value)
-
-    max_xcorr_value = max(xcorr_values)
-    lag_time = (1 / stream[0].stats.sampling_rate) * xcorr_values.index(max_xcorr_value)
-
-    # Perform the same operation backwards to be sure there is not a better match
-    xcorr_values = []
-    for m in range(len(hte_waveform)):
-        # Shift the non-reference waveform temporally
-        if m == 0:
-            shifted_hte_waveform = hte_waveform
-        else:
-            shifted_hte_waveform = np.asarray(hte_waveform[m:].tolist() + [float('nan')] * m)
-
-        # Check that at least 1 second of data overlaps
-        num_samples = 0
-        for n in range(len(shifted_hte_waveform)):
-            if not np.isnan(shifted_hte_waveform[n]) and not np.isnan(hte_reference_waveform[n]):
-                num_samples += 1
-        if num_samples <= stream[0].stats.sampling_rate:
-            continue
-
-        # Cross-correlate the waveforms
-        a = ma.masked_invalid(shifted_hte_waveform)
-        b = ma.masked_invalid(hte_reference_waveform)
-        xcorr_value = ma.corrcoef(a, b)[0][1]
-        xcorr_values.append(xcorr_value)
-
-    if max(xcorr_values) > max_xcorr_value:
-        lag_time = (-1 / stream[0].stats.sampling_rate) * xcorr_values.index(max(xcorr_values))
-
-    return lag_time
 
 
 def calculate_angle(shifted_seismogram, reference_seismogram):
@@ -258,11 +282,14 @@ if __name__ == "__main__":
     for event in events:
         # Query event details from GeoNet FDSN
         event_details = get_event(event)[0]
+        start_times = []
         for pick in event_details.picks:
-            if '.' + values[parameters.index('reference_station')] + '.' in str(pick.resource_id):
-                start_time = pick.time.datetime - datetime.timedelta(seconds=10)
+            for station in stations_to_orient:
+                if '.' + station + '.' in str(pick.resource_id):
+                    start_times.append(pick.time.datetime - datetime.timedelta(seconds=0))
         # Assume event duration does not exceed 2 minutes at any station
-        end_time = start_time + datetime.timedelta(seconds=130)
+        start_time = min(start_times)
+        end_time = start_time + datetime.timedelta(seconds=180)
 
         # Query waveform data from GeoNet FDSN for each station between the start and end times defined for the event
         stations = []
@@ -275,21 +302,24 @@ if __name__ == "__main__":
                                         values[parameters.index('channels')],
                                         start_time.isoformat(),
                                         end_time.isoformat())[0]
+
             # Remove instrument response so seismograms are sensor-independent
             # station_stream.remove_response(output='VEL')
 
-            # Resample stream if sampling rate is not equal to that desired
-            if station_stream[0].stats.sampling_rate != values[parameters.index('sampling_rate')]:
-                for trace in station_stream:
-                    trace.resample(sampling_rate=int(values[parameters.index('sampling_rate')]))
-                    min_times.append(trace.stats.starttime)
-                    max_times.append(trace.stats.endtime)
-
-            # Low pass the waveforms of all events to increase waveform similarly at all sensors:
-            # Filter corner frequency satisfies the condition that it is much smaller than the lowest seismic velocity in the
-            # propagation medium of all events scaled by the linear distance between each pair of sensors
+            # Filter the waveforms of all events to increase waveform similarly at all sensors:
+            # Filter corner frequency satisfies the condition that it is much smaller than the lowest seismic velocity
+            # in the propagation medium of all events scaled by the linear distance between each pair of sensors.
             station_stream.filter(type='lowpass',
                                   freq=float(values[parameters.index('corner_frequency')]))
+
+            # Resample stream if sampling rate is not equal to that desired
+            # if station_stream[0].stats.sampling_rate != values[parameters.index('sampling_rate')]:
+
+            # Resample stream to twice the corner frequency
+            for trace in station_stream:
+                trace.resample(sampling_rate=2 * int(values[parameters.index('corner_frequency')]))
+                min_times.append(trace.stats.starttime)
+                max_times.append(trace.stats.endtime)
 
             streams.append(station_stream)
 
@@ -303,10 +333,6 @@ if __name__ == "__main__":
         reference_station_idx = stations.index(values[parameters.index('reference_station')])
         stations.pop(reference_station_idx)
         reference_station_stream = streams.pop(reference_station_idx)
-
-        # plt.plot(reference_station_stream[0].data, color='b')
-        # plt.plot(streams[0][0].data, alpha=0.4, color='r')
-        # plt.show()
 
         # Align all seismograms for each event to facilitate cross-correlation:
         # Use the lag time that produces the maximum cross-correlation value between each sensor and the reference sensor's
@@ -326,9 +352,10 @@ if __name__ == "__main__":
                     shifted_streams[m][n].data = np.asarray(streams[m][n].data[shift_idx:].tolist() +
                                                             [float('nan')] * shift_idx)
 
+        print(lag_time)
         plt.plot(reference_station_stream[0].data, color='b')
         plt.plot(shifted_streams[0][0].data, alpha=0.4, color='r')
-        plt.show(block=False)
+        plt.show()
 
         # Find the time window of each event for which the correlation of the horizontal waveforms at the sensors is highest:
         # This window is that for which the normalised cross-correlation of the total energy traces of each sensor pair is
@@ -342,7 +369,7 @@ if __name__ == "__main__":
             normalised_xcorr_values = [([0] * len(reference_horizontal_total_energy_waveform))
                                        for y in range(len(shifted_stream_horizontal_total_energy_waveform))]
             for n in range(nandices[0], len(shifted_stream_horizontal_total_energy_waveform)):
-                if nandices[1] and o > nandices[1]:  # Don't do cross-correlation past the data
+                if nandices[1] and n > nandices[1]:  # Don't do cross-correlation past the data
                     break
                 # Initiate a second loop to work through each possible end time in the waveform,
                 # so that all possible windows are tested, BUT require that windows are at least 1 second in length.
