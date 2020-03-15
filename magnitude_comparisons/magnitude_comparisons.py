@@ -8,6 +8,7 @@ import glob
 from io import BytesIO
 import math
 import matplotlib.pyplot as plt
+import numpy as np
 from obspy.io.quakeml.core import Unpickler
 import os
 import pycurl
@@ -15,11 +16,12 @@ from scipy.stats import gmean
 from scipy.odr import Model, Data, ODR
 import time
 
+
 quakeml_reader = Unpickler()
 
 
-def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude, starttime='0000-01-01T00:00:00',
-                    endtime='9999-01-01T00:00:00', maxmagnitude=10):
+def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude, starttime='0000-01-01T00:00:00Z',
+                    endtime='9999-01-01T00:00:00Z', maxmagnitude=10):
 
     """
     Use obspy with pycurl to query event details from the ISC.
@@ -44,13 +46,20 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
         successes = 0
         events = []
 
-        # Build magnitude ranges for query
-        magnitude_limits = [minmagnitude]
+        # Build time ranges for query
+        starttime_dt = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%SZ')
+        endtime_dt = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%SZ')
+        time_ranges = [starttime_dt]
         for i in range(1, factor + 1):
-            magnitude_limits.append(magnitude_limits[-1] + (maxmagnitude - minmagnitude) / factor)
+            time_ranges.append(time_ranges[-1] +
+                               datetime.timedelta(seconds=(endtime_dt - starttime_dt).total_seconds() / factor))
+        # magnitude_limits = [minmagnitude]
+        # for i in range(1, factor + 1):
+        #     magnitude_limits.append(magnitude_limits[-1] + (maxmagnitude - minmagnitude) / factor)
 
         # Run queries
-        for i in range(1, len(magnitude_limits)):
+        # for i in range(1, len(magnitude_limits)):
+        for i in range(1, len(time_ranges)):
 
             # Build query
             query = ""
@@ -60,22 +69,34 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                                 '&top_lat=', str(maxlatitude),
                                 '&left_lon=', str(minlongitude),
                                 '&right_lon=', str(maxlongitude),
-                                '&min_mag=', str(magnitude_limits[i - 1]),
-                                '&start_year=', starttime[0:4],
-                                '&start_month=', starttime[5:7],
-                                '&start_day=', starttime[8:10],
-                                '&start_time=', starttime.split('T')[1],
-                                '&end_year=', endtime[0:4],
-                                '&end_month=', endtime[5:7],
-                                '&end_day=', endtime[8:10],
-                                '&end_time=', endtime.split('T')[1],
-                                '&max_mag=', str(magnitude_limits[i]),
+                                # '&min_mag=', str(magnitude_limits[i - 1]),
+                                '&min_mag=', str(minmagnitude),
+                                # '&start_year=', starttime[0:4],
+                                # '&start_month=', starttime[5:7],
+                                # '&start_day=', starttime[8:10],
+                                # '&start_time=', starttime.split('T')[1],
+                                '&start_year=', str(time_ranges[i - 1].year),
+                                '&start_month=', str(time_ranges[i - 1].month),
+                                '&start_day=', str(time_ranges[i - 1].day),
+                                '&start_time=', str(time_ranges[i - 1].isoformat())[:19].split('T')[1][:-1],
+                                # '&end_year=', endtime[0:4],
+                                # '&end_month=', endtime[5:7],
+                                # '&end_day=', endtime[8:10],
+                                # '&end_time=', endtime.split('T')[1],
+                                '&end_year=', str(time_ranges[i].year),
+                                '&end_month=', str(time_ranges[i].month),
+                                '&end_day=', str(time_ranges[i].day),
+                                '&end_time=', str(time_ranges[i].isoformat())[:19].split('T')[1][:-1],
+                                # '&max_mag=', str(magnitude_limits[i]),
+                                '&max_mag=', str(maxmagnitude),
                                 '&req_mag_type=Any'))
 
             try:
 
-                print('\nAttempting ISC catalog query for events between M ' + str(magnitude_limits[i - 1]) +
-                      ' and ' + str(magnitude_limits[i]))
+                # print('\nAttempting ISC catalog query for events between M ' + str(magnitude_limits[i - 1]) +
+                #       ' and ' + str(magnitude_limits[i]))
+                print('\nAttempting ISC catalog query for events between ' + str(time_ranges[i - 1]) +
+                      ' and ' + str(time_ranges[i]))
 
                 queryresult = curl(query)
                 if "Sorry, but your request cannot be processed at the present time." in queryresult.decode('ascii'):
@@ -91,26 +112,31 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                 successes += 1
 
             except:
-                print('Failed! Query result is: ')
-                print(queryresult)
+                print('Failed! Query result is:')
+                try:
+                    print(queryresult)
+                except:
+                    print('No query result!')
                 print('Will wait one minute before trying again.')
                 time.sleep(60)
                 if successes > 0:
-                    print('Assuming query failed because no events exist at high magnitude range')
+                    # print('Assuming query failed because no events exist at high magnitude range')
+                    print('Assuming query failed because no events exist in the time window')
                     successes += 1
                 else:
                     factor += 10  # Only fails for huge datasets, so try minimise the size of the first new query
                     break
 
-        if successes == len(magnitude_limits) - 1:
+        # if successes == len(magnitude_limits) - 1:
+        if successes == len(time_ranges) - 1:
             success = True
 
     return events
 
 
 def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
-                     minlatitude, maxlatitude, starttime='0000-01-01T00:00:00',
-                     endtime='9999-01-01T00:00:00', maxmagnitude=10):
+                     minlatitude, maxlatitude, starttime='0000-01-01T00:00:00Z',
+                     endtime='9999-01-01T00:00:00Z', maxmagnitude=10):
   
     """
     Use obspy with pycurl to query event catalogs from FDSN members.
@@ -169,8 +195,11 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                 successes += 1
 
             except:
-                print('Failed! Query result is: ')
-                print(queryresult)
+                print('Failed! Query result is:')
+                try:
+                    print(queryresult)
+                except:
+                    print('No query result!')
                 if successes > 0:
                     print('Assuming query failed because no events exist at high magnitude range')
                     successes += 1
@@ -755,11 +784,11 @@ def probability(sample_magnitudes, sample_depths, sample_times,
 
 # Set data gathering parameters
 
-minmagnitude = 5.2  # minimum event magnitude to get from catalog
+minmagnitude = 5  # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -90, 90  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 0, -0.001  # western and eastern longitude for event search window
-starttime = '0001-01-01T00:00:00'  # event query starttime
-endtime = '2021-01-01T00:00:00' #'2020-03-01T00:00:00'  # event query endtime, 'now' will set it to the current time
+starttime = '1970-01-01T00:00:00Z'  # event query starttime
+endtime = '2021-01-01T00:00:00Z' #'2020-03-01T00:00:00'  # event query endtime, 'now' will set it to the current time
 
 if endtime == 'now':
     endtime = str(datetime.datetime.now().isoformat())[:19]
@@ -780,7 +809,7 @@ catalogs = [[] for i in range(len(catalog_names))]
 # single catalog, you will need to repeat its details as both the comparison and reference catalogs etc.
 
 # comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
-comparison_magnitudes = [['mB', 'MS', 'ML'], ['MW']]
+comparison_magnitudes = [['mB'], ['MW']]
 
 # Set matching parameters
 
@@ -1058,12 +1087,6 @@ for n in range(5, len(data_types)):
         slope, intercept = orthregress(x, y)
         plt.plot([0, 10], [intercept, slope * 10 + intercept], color='k', linewidth=0.5, alpha=0.5)
 
-        # Do an orthogonal distance regression and plot this overtop of the data, showing the
-        # linear relationship between the magnitudes
-
-        slope, intercept = orthregress(x, y)
-        plt.plot([0, 10], [intercept, slope * 10 + intercept], color='k', linewidth=0.5, alpha=0.5)
-
         # Add plot features for clarity
 
         plt.xlabel(data_types[m])
@@ -1077,3 +1100,70 @@ for n in range(5, len(data_types)):
         plt.close()
 
         complete_pairs.append(str(n) + ',' + str(m))
+
+        # Use machine learning to fit a polynomial function to the data
+
+        import pandas as pd
+        from sklearn.linear_model import LassoCV
+        from sklearn.model_selection import train_test_split
+
+        def lasso_regression(data, predictors, alpha, models_to_plot={}):
+
+            # Test/train split
+            X_train, X_test, y_train, y_test = train_test_split(data['x'], data['y'], test_size=0.3)
+            X_train, y_train = zip(*sorted(zip(X_train, y_train)))  # Order x and y
+            X_test, y_test = zip(*sorted(zip(X_test, y_test)))  # Order x and y
+
+            train_data = pd.DataFrame(np.column_stack([X_train, y_train]), columns=['x', 'y'])
+            test_data = pd.DataFrame(np.column_stack([X_test, y_test]), columns=['x', 'y'])
+            for i in range(2, 16):  # power of 1 is already there
+                colname = 'x_%d' % i  # new var will be x_power
+                train_data[colname] = train_data['x'] ** i
+                test_data[colname] = test_data['x'] ** i
+
+            # Fit the model
+            lassoreg = LassoCV(eps=0.0001, alphas=[alpha], max_iter=1e5, normalize=True, cv=5)
+            lassoreg.fit(train_data[predictors], train_data['y'])
+            y_pred = lassoreg.predict(test_data[predictors])
+
+            # Return the result in pre-defined format
+            rss = np.sqrt(sum((y_pred - test_data['y']) ** 2))
+            ret = [rss]
+            ret.extend([lassoreg.intercept_])
+            ret.extend(lassoreg.coef_)
+
+            # Check if a plot is to be made for the entered alpha
+            if alpha in models_to_plot:
+                plt.subplot(models_to_plot[alpha])
+                plt.tight_layout()
+                plt.scatter(data['x'], data['y'], color='red', s=0.1)
+                plt.scatter(x_vals, mean_yvals, s=n_yvals, edgecolors='k', linewidths=1)
+                plt.plot(test_data['x'], y_pred, color='b', linewidth=1)
+                plt.title('Plot for alpha: %.3g' % alpha + '\n' + 'RSS: %.3g' % rss)
+
+            return ret
+
+
+        # Define data as a dataframe
+        data = pd.DataFrame(np.column_stack([x, y]), columns=['x', 'y'])
+        # data = pd.DataFrame(np.column_stack([x_vals, mean_yvals]), columns=['x', 'y'])
+
+        # Initialize predictors to all 15 powers of x
+        predictors = ['x']
+        predictors.extend(['x_%d' % i for i in range(2, 16)])
+
+        # Define the alpha values to test
+        alpha_lasso = [1e-4, 5e-4, 1e-3, 2e-3, 3e-3, 4e-3]
+
+        # Initialize the dataframe to store coefficients
+        col = ['rss', 'intercept'] + ['coef_x_%d' % i for i in range(1, 16)]
+        ind = ['alpha_%.2g' % alpha_lasso[i] for i in range(len(alpha_lasso))]
+        coef_matrix_lasso = pd.DataFrame(index=ind, columns=col)
+
+        # Define the alpha value models to plot
+        models_to_plot = {1e-4: 231, 5e-4: 232, 1e-3: 233, 2e-3: 234, 3e-3: 235, 4e-3: 236}
+
+        # Iterate over the alpha values:
+        for i in range(len(alpha_lasso)):
+            coef_matrix_lasso.iloc[i,] = lasso_regression(data, predictors, alpha_lasso[i], models_to_plot)
+        plt.show()
