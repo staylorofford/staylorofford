@@ -25,6 +25,7 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
 
     """
     Use obspy with pycurl to query event details from the ISC.
+    Uses a file to save query results to to avoid crashing the computer due to memory filling.
     :param minmagnitude:
     :param minlongitude:
     :param maxlongitude:
@@ -41,10 +42,11 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
 
     factor = 1
     success = False
+    with open('catalogue_data.txt', 'w') as outfile:
+        pass
     while not success:
 
         successes = 0
-        events = []
 
         # Build time ranges for query
         starttime_dt = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%SZ')
@@ -53,9 +55,6 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
         for i in range(1, factor + 1):
             time_ranges.append(time_ranges[-1] +
                                datetime.timedelta(seconds=(endtime_dt - starttime_dt).total_seconds() / factor))
-        # magnitude_limits = [minmagnitude]
-        # for i in range(1, factor + 1):
-        #     magnitude_limits.append(magnitude_limits[-1] + (maxmagnitude - minmagnitude) / factor)
 
         # Run queries
         # for i in range(1, len(magnitude_limits)):
@@ -69,32 +68,20 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                                 '&top_lat=', str(maxlatitude),
                                 '&left_lon=', str(minlongitude),
                                 '&right_lon=', str(maxlongitude),
-                                # '&min_mag=', str(magnitude_limits[i - 1]),
                                 '&min_mag=', str(minmagnitude),
-                                # '&start_year=', starttime[0:4],
-                                # '&start_month=', starttime[5:7],
-                                # '&start_day=', starttime[8:10],
-                                # '&start_time=', starttime.split('T')[1],
                                 '&start_year=', str(time_ranges[i - 1].year),
                                 '&start_month=', str(time_ranges[i - 1].month),
                                 '&start_day=', str(time_ranges[i - 1].day),
                                 '&start_time=', str(time_ranges[i - 1].isoformat())[:19].split('T')[1][:-1],
-                                # '&end_year=', endtime[0:4],
-                                # '&end_month=', endtime[5:7],
-                                # '&end_day=', endtime[8:10],
-                                # '&end_time=', endtime.split('T')[1],
                                 '&end_year=', str(time_ranges[i].year),
                                 '&end_month=', str(time_ranges[i].month),
                                 '&end_day=', str(time_ranges[i].day),
                                 '&end_time=', str(time_ranges[i].isoformat())[:19].split('T')[1][:-1],
-                                # '&max_mag=', str(magnitude_limits[i]),
                                 '&max_mag=', str(maxmagnitude),
                                 '&req_mag_type=Any'))
 
             try:
 
-                # print('\nAttempting ISC catalog query for events between M ' + str(magnitude_limits[i - 1]) +
-                #       ' and ' + str(magnitude_limits[i]))
                 print('\nAttempting ISC catalog query for events between ' + str(time_ranges[i - 1]) +
                       ' and ' + str(time_ranges[i]))
 
@@ -107,8 +94,8 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                     break
 
                 catalog = quakeml_reader.loads(queryresult)
-                events.extend(catalog.events)
-                print('Catalog now has ' + str(len(events)) + ' events')
+                events = catalog.events
+                print('Query produced ' + str(len(events)) + ' events')
                 successes += 1
 
             except:
@@ -120,16 +107,34 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                 print('Will wait one minute before trying again.')
                 time.sleep(60)
                 if successes > 0:
-                    # print('Assuming query failed because no events exist at high magnitude range')
                     print('Assuming query failed because no events exist in the time window')
                     successes += 1
                 else:
                     factor += 10  # Only fails for huge datasets, so try minimise the size of the first new query
                     break
 
-        # if successes == len(magnitude_limits) - 1:
+            # Save queryresult to file
+            with open('catalog_data.txt', 'a') as outfile:
+                outfile.write(queryresult.decode('utf-8'))
+
         if successes == len(time_ranges) - 1:
             success = True
+
+    # Load all data from file
+    events = []
+    with open('catalog_data.txt', 'r') as infile:
+        numentries = 0
+        for row in infile:
+            if '<?xml version="1.0" encoding="UTF-8"?>' in row and numentries == 0:
+                numentries += 1
+                entry = ''
+            elif '<?xml version="1.0" encoding="UTF-8"?>' in row and numentries > 0:
+                catalog = quakeml_reader.loads(entry.encode('utf-8'))
+                events.extend(catalog.events)
+                print('Catalog has ' + str(len(events)) + ' events')
+                entry = ''
+            else:
+                entry += row
 
     return events
 
@@ -784,7 +789,7 @@ def probability(sample_magnitudes, sample_depths, sample_times,
 
 # Set data gathering parameters
 
-minmagnitude = 5  # minimum event magnitude to get from catalog
+minmagnitude = 6  # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -90, 90  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 0, -0.001  # western and eastern longitude for event search window
 starttime = '1970-01-01T00:00:00Z'  # event query starttime
@@ -876,8 +881,8 @@ if build_GeoNet_Mw_timeseries:
 
 # Convert date strings to datetime objects
 
-starttime = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%S')
-endtime = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%S')
+starttime = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%SZ')
+endtime = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%SZ')
 
 if probabilities:
 
