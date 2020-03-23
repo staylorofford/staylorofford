@@ -409,7 +409,7 @@ if __name__ == "__main__":
 
         # Assume event duration does not exceed 3 minutes at any station
         start_time = min(p_times) - datetime.timedelta(seconds=15)
-        end_time = start_time + datetime.timedelta(seconds=195)
+        end_time = start_time + datetime.timedelta(seconds=95)
 
         # Query waveform data from GeoNet FDSN for each station between the start and end times defined for the event
         stations = []
@@ -522,7 +522,7 @@ if __name__ == "__main__":
             print(ref_p)
             plt.plot(ref_p[0], color='b')
             plt.plot(stream_p[0], color='r', alpha=0.8)
-            plt.savefig('p.png')
+            plt.savefig('lag_time_waveforms.png')
             plt.clf()
             lag_time = find_lag_time(stream_p, ref_p)
             print(lag_time)
@@ -534,7 +534,7 @@ if __name__ == "__main__":
                     streams[m][n].data = ma.masked_array(streams[m][n].data)
 
                 # Apply shift
-                if lag_time >= 0:
+                if lag_time > 0:
                     nandices[0] = shift_idx
                     shifted_streams[m][n].data = np.asarray([float('nan')] * shift_idx +
                                                             streams[m][n].data[:-shift_idx].filled(
@@ -571,15 +571,24 @@ if __name__ == "__main__":
         reference_horizontal_total_energy_waveform = np.asarray(smooth_data(
             reference_horizontal_total_energy_waveform, int(values[parameters.index('corner_frequency')])))
 
+        # print(shifted_streams[0])
+        # print('0')
+        # print()
         for m in range(len(shifted_streams)):
             # Get vertical component data and calculate its envelope for shifted stream
             # for tr in shifted_streams[m]:
             #     if tr.stats.channel[-1] == 'Z':
             #         shifted_stream_horizontal_total_energy_waveform = calculate_envelope(tr.data)
 
+            # print(shifted_stream_horizontal_total_energy_waveform)
+            # print('1')
             shifted_stream_horizontal_total_energy_waveform = calculate_horizontal_total_energy(shifted_streams[m])
+            # print(shifted_stream_horizontal_total_energy_waveform)
+            # print('2')
             shifted_stream_horizontal_total_energy_waveform = np.asarray(smooth_data(
                 shifted_stream_horizontal_total_energy_waveform, int(values[parameters.index('corner_frequency')])))
+            # print(shifted_stream_horizontal_total_energy_waveform)
+            # print('3')
 
             plot1 = reference_horizontal_total_energy_waveform / max(reference_horizontal_total_energy_waveform)
             plot2 = shifted_stream_horizontal_total_energy_waveform / max(shifted_stream_horizontal_total_energy_waveform)
@@ -605,6 +614,12 @@ if __name__ == "__main__":
                     y_mean = np.nanmean(reference_horizontal_total_energy_waveform[n:o])
                     x_var = np.nanvar(shifted_stream_horizontal_total_energy_waveform[n:o])
                     y_var = np.nanvar(reference_horizontal_total_energy_waveform[n:o])
+                    print('\nNEW\n')
+                    print(shifted_stream_horizontal_total_energy_waveform[n:o])
+                    print()
+                    print(reference_horizontal_total_energy_waveform[n:o])
+                    print(n, o)
+                    print(x_mean, y_mean, x_var, y_var)
                     if np.isnan(x_mean) or np.isnan(y_mean) or np.isnan(x_var) or np.isnan(y_var):
                         continue
                     # Iterate through all values in the given window
