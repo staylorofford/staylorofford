@@ -276,9 +276,29 @@ def smooth_data(data, N):
     :return: smoothed data in list
     """
 
+    # Smooth data
     smoothed_data = [0] * len(data)
     for m in range(N, len(data) - N):
         smoothed_data[m] = np.nanmean(data[m - N: m + N])
+
+    # Find the first and last nan indices if they exist
+    nandices = [None, None]
+    for n in range(len(smoothed_data) - 1):
+        if np.isnan(smoothed_data[n]) and not np.isnan(smoothed_data[n + 1]):
+            nandices[1] = n + 1
+    for n in range(1, len(smoothed_data)):
+        if np.isnan(smoothed_data[n]) and not np.isnan(smoothed_data[n - 1]):
+            nandices[0] = n
+            break
+
+    # If nan values exist, "nan-out" the data before and after to avoid adding
+    # 0 data where none exist
+
+    if nandices[0] is not None:
+        smoothed_data[:nandices[0]] = [np.nan] * nandices[0]
+    if nandices[1] is not None:
+        smoothed_data[nandices[1]:] = [np.nan] * (len(smoothed_data) - nandices[1])
+
     return smoothed_data
 
 
@@ -570,26 +590,17 @@ if __name__ == "__main__":
         reference_horizontal_total_energy_waveform = calculate_horizontal_total_energy(reference_station_stream)
         reference_horizontal_total_energy_waveform = np.asarray(smooth_data(
             reference_horizontal_total_energy_waveform, int(values[parameters.index('corner_frequency')])))
-
-        # print(shifted_streams[0])
-        # print('0')
-        # print()
         for m in range(len(shifted_streams)):
             # Get vertical component data and calculate its envelope for shifted stream
             # for tr in shifted_streams[m]:
             #     if tr.stats.channel[-1] == 'Z':
             #         shifted_stream_horizontal_total_energy_waveform = calculate_envelope(tr.data)
 
-            # print(shifted_stream_horizontal_total_energy_waveform)
-            # print('1')
             shifted_stream_horizontal_total_energy_waveform = calculate_horizontal_total_energy(shifted_streams[m])
-            # print(shifted_stream_horizontal_total_energy_waveform)
-            # print('2')
             shifted_stream_horizontal_total_energy_waveform = np.asarray(smooth_data(
                 shifted_stream_horizontal_total_energy_waveform, int(values[parameters.index('corner_frequency')])))
-            # print(shifted_stream_horizontal_total_energy_waveform)
-            # print('3')
 
+            print(reference_horizontal_total_energy_waveform.tolist())
             plot1 = reference_horizontal_total_energy_waveform / max(reference_horizontal_total_energy_waveform)
             plot2 = shifted_stream_horizontal_total_energy_waveform / max(shifted_stream_horizontal_total_energy_waveform)
             plt.plot(plot1, color='b')
@@ -614,12 +625,8 @@ if __name__ == "__main__":
                     y_mean = np.nanmean(reference_horizontal_total_energy_waveform[n:o])
                     x_var = np.nanvar(shifted_stream_horizontal_total_energy_waveform[n:o])
                     y_var = np.nanvar(reference_horizontal_total_energy_waveform[n:o])
-                    print('\nNEW\n')
-                    print(shifted_stream_horizontal_total_energy_waveform[n:o])
-                    print()
-                    print(reference_horizontal_total_energy_waveform[n:o])
-                    print(n, o)
-                    print(x_mean, y_mean, x_var, y_var)
+                    if x_var == 0 or y_var == 0:
+                        continue
                     if np.isnan(x_mean) or np.isnan(y_mean) or np.isnan(x_var) or np.isnan(y_var):
                         continue
                     # Iterate through all values in the given window
