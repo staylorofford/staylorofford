@@ -276,28 +276,15 @@ def smooth_data(data, N):
     :return: smoothed data in list
     """
 
+    # Replace nan values in data with 0s
+    for m in range(len(data)):
+        if np.isnan(data[m]):
+            data[m] = 0
+
     # Smooth data
     smoothed_data = [0] * len(data)
     for m in range(N, len(data) - N):
         smoothed_data[m] = np.nanmean(data[m - N: m + N])
-
-    # Find the first and last nan indices if they exist
-    nandices = [None, None]
-    for n in range(len(smoothed_data) - 1):
-        if np.isnan(smoothed_data[n]) and not np.isnan(smoothed_data[n + 1]):
-            nandices[1] = n + 1
-    for n in range(1, len(smoothed_data)):
-        if np.isnan(smoothed_data[n]) and not np.isnan(smoothed_data[n - 1]):
-            nandices[0] = n
-            break
-
-    # If nan values exist, "nan-out" the data before and after to avoid adding
-    # 0 data where none exist
-
-    if nandices[0] is not None:
-        smoothed_data[:nandices[0]] = [np.nan] * nandices[0]
-    if nandices[1] is not None:
-        smoothed_data[nandices[1]:] = [np.nan] * (len(smoothed_data) - nandices[1])
 
     return smoothed_data
 
@@ -429,7 +416,7 @@ if __name__ == "__main__":
 
         # Assume event duration does not exceed 3 minutes at any station
         start_time = min(p_times) - datetime.timedelta(seconds=15)
-        end_time = start_time + datetime.timedelta(seconds=95)
+        end_time = start_time + datetime.timedelta(seconds=195)
 
         # Query waveform data from GeoNet FDSN for each station between the start and end times defined for the event
         stations = []
@@ -538,6 +525,7 @@ if __name__ == "__main__":
                        endtime=streams[m][0].stats.endtime,
                        pad=True,
                        fill_value=None)
+            print('Finding lag time using cut seismograms:')
             print(stream_p)
             print(ref_p)
             plt.plot(ref_p[0], color='b')
@@ -545,7 +533,6 @@ if __name__ == "__main__":
             plt.savefig('lag_time_waveforms.png')
             plt.clf()
             lag_time = find_lag_time(stream_p, ref_p)
-            print(lag_time)
             shift_idx = int(abs(lag_time * streams[m][0].stats.sampling_rate))
             for n in range(len(streams[m])):
 
@@ -599,10 +586,8 @@ if __name__ == "__main__":
             shifted_stream_horizontal_total_energy_waveform = calculate_horizontal_total_energy(shifted_streams[m])
             shifted_stream_horizontal_total_energy_waveform = np.asarray(smooth_data(
                 shifted_stream_horizontal_total_energy_waveform, int(values[parameters.index('corner_frequency')])))
-
-            print(reference_horizontal_total_energy_waveform.tolist())
-            plot1 = reference_horizontal_total_energy_waveform / max(reference_horizontal_total_energy_waveform)
-            plot2 = shifted_stream_horizontal_total_energy_waveform / max(shifted_stream_horizontal_total_energy_waveform)
+            plot1 = reference_horizontal_total_energy_waveform / np.nanmax(reference_horizontal_total_energy_waveform)
+            plot2 = shifted_stream_horizontal_total_energy_waveform / np.nanmax(shifted_stream_horizontal_total_energy_waveform)
             plt.plot(plot1, color='b')
             plt.plot(plot2, color='r', alpha=0.8)
             plt.savefig('smoothed_shifted_waveforms.png')
@@ -615,7 +600,7 @@ if __name__ == "__main__":
                 if nandices[1] and n > nandices[1]:  # Don't do cross-correlation past the data
                     break
                 # Initiate a second loop to work through each possible end time in the waveform,
-                # so that all possible windows are tested, BUT require that windows are at least 1 seconds in length.
+                # so that all possible windows are tested, BUT require that windows are at least 1 second in length.
                 for o in range(n + 1 * int(shifted_streams[m][0].stats.sampling_rate) + 1,
                                len(reference_horizontal_total_energy_waveform)):
                     if nandices[1] and o > nandices[1]:  # Don't do cross-correlation past the data
@@ -695,8 +680,12 @@ if __name__ == "__main__":
                     trimmed_reference_stream.pop(n)
 
             # Calculate angle
-            # orientation_angle = calculate_angle(trimmed_and_shifted_streams, trimmed_reference_stream)
+            orientation_angle = calculate_angle(trimmed_and_shifted_streams, trimmed_reference_stream)
+            print('Old method orientation angle:')
+            print(orientation_angle)
             orientation_angle = find_rotation_angle(trimmed_and_shifted_streams, trimmed_reference_stream)
+            print('New method orientation angle:')
+            print(orientation_angle)
             orientation_angles.append(orientation_angle)
 
         # Save orientation angles for the event
