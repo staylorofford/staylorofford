@@ -14,7 +14,6 @@ import os
 import pycurl
 from scipy.stats import gmean
 from scipy.odr import Model, Data, ODR
-import time
 
 
 quakeml_reader = Unpickler()
@@ -42,7 +41,7 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
 
     factor = 1
     success = False
-    with open('catalogue_data.txt', 'w') as outfile:
+    with open('catalog_data.txt', 'w') as outfile:
         pass
     while not success:
 
@@ -110,7 +109,7 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                     print('Assuming query failed because no events exist in the time window')
                     successes += 1
                 else:
-                    factor += 10  # Only fails for huge datasets, so try minimise the size of the first new query
+                    factor += 1000  # Only fails for huge datasets, so try minimise the size of the first new query
                     break
 
             # Save queryresult to file
@@ -126,13 +125,20 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
         numentries = 0
         for row in infile:
             if '<?xml version="1.0" encoding="UTF-8"?>' in row and numentries == 0:
+                # Catches the end of the first entry and start of the second
                 numentries += 1
                 entry = ''
             elif '<?xml version="1.0" encoding="UTF-8"?>' in row and numentries > 0:
-                catalog = quakeml_reader.loads(entry.encode('utf-8'))
-                events.extend(catalog.events)
-                print('Catalog has ' + str(len(events)) + ' events')
-                entry = ''
+                # Catches when a new entry occurs
+                if entry.encode('utf-8') == b'\n<quakeml xmlns="http://quakeml.org/xmlns/quakeml/1.2">No ' \
+                                            b'events were found.\n':
+                    # Catch when the current entry has no data
+                    entry = ''
+                else:
+                    catalog = quakeml_reader.loads(entry.encode('utf-8'))
+                    events.extend(catalog.events)
+                    print('Catalog has ' + str(len(events)) + ' events')
+                    entry = ''
             else:
                 entry += row
 
@@ -209,7 +215,7 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                     print('Assuming query failed because no events exist at high magnitude range')
                     successes += 1
                 else:
-                    factor += 10  # Only fails for huge datasets, so try minimise the size of the first new query
+                    factor += 1000  # Only fails for huge datasets, so try minimise the size of the first new query
                     break
 
         if successes == len(magnitude_limits) - 1:
@@ -284,10 +290,7 @@ def save_magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes):
         for j in range(len(comparison_magnitudes[i])):
             for event in catalogs[i]:
                 for magnitude in event.magnitudes:
-                    # Ignore case, unless magnitude type is mB or mb (or MB, whatever that is)
-                    if ((magnitude.magnitude_type.lower() == comparison_magnitudes[i][j].lower() and
-                            comparison_magnitudes[i][j].lower != 'mb') or
-                            magnitude.magnitude_type == comparison_magnitudes[i][j]):
+                    if magnitude.magnitude_type == comparison_magnitudes[i][j]:
                             datalist[0][j].append(event.resource_id)
                             datalist[1][j].append(event.origins[0].time)
                             datalist[2][j].append(magnitude.magnitude_type)
@@ -462,168 +465,172 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
     matched_temporal_lengths = []
     matched_spatial_lengths = []
     for n in range(len(timeseries_types)):
-        if timeseries_types[n].split('_')[0] == catalog_names[0].split('_')[0] and \
-                timeseries_types[n].split('_')[2] in comparison_magnitudes[0]:
-                # We have one of our first sets of comparison magnitudes
-            for m in range(len(timeseries_types)):
-                if str(m) + ',' + str(n) in complete_pairs:
-                    continue
+        for m in range(len(timeseries_types)):
+            if str(m) + ',' + str(n) in complete_pairs:
+                # Don't repeat matching
+                continue
+            if timeseries_types[m].split('_')[0] == timeseries_types[n].split('_')[0] and \
+                    timeseries_types[m].split('_')[2] == timeseries_types[n].split('_')[1]:
+                # Don't match the same data against itself
+                continue
 
-                print('Looking for matching events with magnitude types ' + timeseries_types[n] +
-                      ' and ' + timeseries_types[m] + '...')
-                if ((timeseries_types[m].split('_')[0] == catalog_names[0].split('_')[0] and \
-                        timeseries_types[m].split('_')[2] in comparison_magnitudes[0]) or
-                        catalog_names[0] == catalog_names[1]):
-                        # We have another of our first sets of comparison magnitudes
-                        # Find matches and load data into datalist
-                        # Go through all the entires for the nth magnitude type
-                        for k in range(len(magnitude_timeseries[0][n])):
-                            event_index = event_list.index(magnitude_timeseries[0][n][k])
-                            # Go through all the entires for the mth magnitude type
-                            for l in range(len(magnitude_timeseries[0][m])):
-                                # Match based on eventID
-                                if magnitude_timeseries[0][n][k] == magnitude_timeseries[0][m][l]:
-                                    datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
-                                        magnitude_timeseries[3][n][k]
-                                    datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
-                                        magnitude_timeseries[3][m][l]
-                elif timeseries_types[m].split('_')[0] == catalog_names[1].split('_')[0] and \
-                        timeseries_types[m].split('_')[2] in comparison_magnitudes[1]:
-                        # We have one of our second sets of comparison magnitudes
-                    for k in range(len(magnitude_timeseries[0][n])):
-                        event_index = event_list.index(magnitude_timeseries[0][n][k])
-                        # Check to see if the event has already been matched
-                        if datalist[1][event_index]:
-                            # If it has, skip the matching routine and save the new data
-                            try:
-                                match_idx = magnitude_timeseries[0][m].index(datalist[1][event_index])
-                                print('Match exists already for event ' + str(magnitude_timeseries[0][n][k]) +
-                                      '. This event has been matched with event at index ' + str(match_idx))
+            print('Looking for matching events with magnitude types ' + timeseries_types[n] +
+                  ' and ' + timeseries_types[m] + '...')
+            if timeseries_types[m].split('_')[0] == catalog_names[0].split('_')[0] and \
+                    (timeseries_types[m].split('_')[2] in comparison_magnitudes[0] or
+                     catalog_names[0] == catalog_names[1]):
+                # We have another of our first sets of comparison magnitudes:
+                # This will do the internal matching routine.
+                # Find matches and load data into datalist
+                # Go through all the entires for the nth magnitude type
+                for k in range(len(magnitude_timeseries[0][n])):
+                    event_index = event_list.index(magnitude_timeseries[0][n][k])
+                    # Go through all the entires for the mth magnitude type
+                    for l in range(len(magnitude_timeseries[0][m])):
+                        # Match based on eventID
+                        if magnitude_timeseries[0][n][k] == magnitude_timeseries[0][m][l]:
+                            datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
+                                magnitude_timeseries[3][n][k]
+                        datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
+                            magnitude_timeseries[3][m][l]
+            elif timeseries_types[m].split('_')[0] == catalog_names[1].split('_')[0] and \
+                    timeseries_types[m].split('_')[2] in comparison_magnitudes[1]:
+                # We have one of our second sets of comparison magnitudes:
+                # This will do the external matching routine.
+                for k in range(len(magnitude_timeseries[0][n])):
+                    event_index = event_list.index(magnitude_timeseries[0][n][k])
+                    # Check to see if the event has already been matched
+                    if datalist[1][event_index]:
+                        # If it has, skip the matching routine and save the new data
+                        try:
+                            match_idx = magnitude_timeseries[0][m].index(datalist[1][event_index])
+                            print('Match exists already for event ' + str(magnitude_timeseries[0][n][k]) +
+                                  '. This event has been matched with event at index ' + str(match_idx))
+                            datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
+                                magnitude_timeseries[3][n][k]
+                            datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
+                                magnitude_timeseries[3][m][match_idx]
+                            continue
+                        except ValueError:
+                            # This will occur if a match exists, but that event does not have the magnitude of
+                            # the current type. The code will produce magnitudes from two different events within
+                            # the same RMS error threshold! Or perhaps only for the former if the latter does not
+                            # fall within the threshold.
+                            pass
+
+                    # Calculate 2D length between event and reference events for matching criteria
+
+                    temporal_lengths = []
+                    spatial_lengths = []
+                    lengths = []
+                    indices = []
+                    if magnitude_timeseries[6][n][k][:4] == 'None':  # Ignore events with no depth
+                        continue
+                    ETi, ELa, ELo, EDe = [datetime.datetime.strptime(magnitude_timeseries[1][n][k],
+                                                                     '%Y-%m-%dT%H:%M:%S.%fZ'),
+                                          float(magnitude_timeseries[4][n][k]),
+                                          float(magnitude_timeseries[5][n][k]),
+                                          float(magnitude_timeseries[6][n][k])]
+                    Ex, Ey, Ez = to_cartesian(ELa, ELo, EDe)
+
+                    for l in range(len(magnitude_timeseries[0][m])):
+                        if magnitude_timeseries[6][m][l][:4] == 'None':  # Ignore events with no depth
+                            continue
+                        RETi, RELa, RELo, REDe = [datetime.datetime.strptime(magnitude_timeseries[1][m][l],
+                                                                             '%Y-%m-%dT%H:%M:%S.%fZ'),
+                                                  float(magnitude_timeseries[4][m][l]),
+                                                  float(magnitude_timeseries[5][m][l]),
+                                                  float(magnitude_timeseries[6][m][l])]
+                        REx, REy, REz = to_cartesian(RELa, RELo, REDe)
+
+                        temporal_length = abs((ETi - RETi).total_seconds())
+                        if temporal_length > max_dt:
+                            continue
+                        else:
+                            temporal_lengths.append(temporal_length)
+
+                        spatial_length = math.sqrt((Ex - REx) ** 2 + (Ey - REy) ** 2 + (Ez - REz) ** 2) / 1000.0
+                        if spatial_length > max_dist:
+                            continue
+                        else:
+                            spatial_lengths.append(spatial_length)
+
+                        lengths.append(math.sqrt(temporal_length ** 2 + spatial_length ** 2))
+                        indices.append(l)
+
+                    if len(lengths) > 0:
+
+                        # Search all possible matches and use an earthquake location routine to test
+                        # if the events are representing the same earthquake. The rms threshold value
+                        # is used as a proxy for this.
+
+                        # Sort the length lists
+                        lengths, spatial_lengths, temporal_lengths, indices, = zip(*sorted(zip(lengths,
+                                                                                               spatial_lengths,
+                                                                                               temporal_lengths,
+                                                                                               indices)))
+
+                        # Make the event file to use in the earthquake location
+                        event_file = open('temporary_event_file', 'w')
+                        event_file.write('eventID\n' + str(magnitude_timeseries[0][n][k].split('/')[-1]) + '\n')
+                        event_file.close()
+
+                        # Begin the search with the event match with smallest length and end when a match is found
+                        # that meets the rms threshold.
+                        # NOTE: only works for reference catalog being the GeoNet catalog currently!
+                        # event_file contains the eventID from the GeoNet catalog
+                        # test_origins contains the potential match hypocentre and origin time
+                        for l in range(len(indices)):
+                            match_idx = indices[l]
+
+                            test_origins = open('temporary_test_origins', 'w')
+                            test_origins.write('latitude,longitude,depth,origin_time\n' +
+                                               str(magnitude_timeseries[4][m][match_idx]) + ',' +
+                                               str(magnitude_timeseries[5][m][match_idx]) + ',' +
+                                               str(magnitude_timeseries[6][m][match_idx][:-1]) + ',' +
+                                               str(datetime.datetime.strptime(magnitude_timeseries[1][m][match_idx],
+                                                                              '%Y-%m-%dT%H:%M:%S.%fZ').isoformat()) +
+                                               'Z\n')
+                            test_origins.close()
+
+                            # Convert and collate data into format expected by earthquake location code
+                            arrival_time_data, arrival_time_data_header, grid_points, grid_header, test_origins = \
+                                earthquake_location.parse_files(eventid_file='temporary_event_file',
+                                                                test_origins='temporary_test_origins',
+                                                                mode='spherical')
+
+                            # Check arrival time data is non-empty, and if it is, ensure arrival is ignored
+                            if len(arrival_time_data) == 1 and len(arrival_time_data[0]) == 0:
+                                print('No arrival time data exists for this event! It will produce no match.')
+                                earthquake_origins, rms_errors = [[0, 0, 0, datetime.datetime.now()], [9999]]
+                            else:  # Otherwise, perform earthquake location
+                                earthquake_origins, rms_errors = earthquake_location.test_test_origins('grid_search',
+                                                                                                       arrival_time_data,
+                                                                                                       arrival_time_data_header,
+                                                                                                       grid_points,
+                                                                                                       grid_header,
+                                                                                                       test_origins)
+                            rms_error = rms_errors[0]
+                            print('For match_idx ' + str(match_idx) + ' rms error is ' + str(rms_error))
+
+                            if rms_error <= rms_threshold:
+                                print('Matched event ' + str(magnitude_timeseries[0][n][k]) +
+                                      ' with event at index ' + str(match_idx))
+                                # Save the data for the match
+                                datalist[1][event_index] = magnitude_timeseries[0][m][match_idx]
+                                datalist[2][event_index] = str(rms_error)
                                 datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
                                     magnitude_timeseries[3][n][k]
                                 datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
                                     magnitude_timeseries[3][m][match_idx]
-                                continue
-                            except ValueError:
-                                # This will occur if a match exists, but that event does not have the magnitude of
-                                # the current type. The code will produce magnitudes from two different events within
-                                # the same RMS error threshold! Or perhaps only for the former if the latter does not
-                                # fall within the threshold.
-                                pass
+                                matched_spatial_lengths.append(spatial_lengths[indices.index(match_idx)])
+                                matched_temporal_lengths.append(temporal_lengths[indices.index(match_idx)])
+                                break  # break on the first matching event
 
-                        # Calculate 2D length between event and reference events for matching criteria
+                        os.remove('temporary_event_file')
+                        os.remove('temporary_test_origins')
 
-                        temporal_lengths = []
-                        spatial_lengths = []
-                        lengths = []
-                        indices = []
-                        if magnitude_timeseries[6][n][k][:4] == 'None':  # Ignore events with no depth
-                            continue
-                        ETi, ELa, ELo, EDe = [datetime.datetime.strptime(magnitude_timeseries[1][n][k], 
-                                                                         '%Y-%m-%dT%H:%M:%S.%fZ'),
-                                              float(magnitude_timeseries[4][n][k]), 
-                                              float(magnitude_timeseries[5][n][k]),
-                                              float(magnitude_timeseries[6][n][k])]
-                        Ex, Ey, Ez = to_cartesian(ELa, ELo, EDe)
-
-                        for l in range(len(magnitude_timeseries[0][m])):
-                            if magnitude_timeseries[6][m][l][:4] == 'None':  # Ignore events with no depth
-                                continue
-                            RETi, RELa, RELo, REDe = [datetime.datetime.strptime(magnitude_timeseries[1][m][l],
-                                                                                 '%Y-%m-%dT%H:%M:%S.%fZ'),
-                                                      float(magnitude_timeseries[4][m][l]),
-                                                      float(magnitude_timeseries[5][m][l]),
-                                                      float(magnitude_timeseries[6][m][l])]
-                            REx, REy, REz = to_cartesian(RELa, RELo, REDe)
-
-                            temporal_length = abs((ETi - RETi).total_seconds())
-                            if temporal_length > max_dt:
-                                continue
-                            else:
-                                temporal_lengths.append(temporal_length)
-
-                            spatial_length = math.sqrt((Ex - REx) ** 2 + (Ey - REy) ** 2 + (Ez - REz) ** 2) / 1000.0
-                            if spatial_length > max_dist:
-                                continue
-                            else:
-                                spatial_lengths.append(spatial_length)
-
-                            lengths.append(math.sqrt(temporal_length ** 2 + spatial_length ** 2))
-                            indices.append(l)
-
-                        if len(lengths) > 0:
-
-                            # Search all possible matches and use an earthquake location routine to test
-                            # if the events are representing the same earthquake. The rms threshold value
-                            # is used as a proxy for this.
-
-                            # Sort the length lists
-                            lengths, spatial_lengths, temporal_lengths, indices, = zip(*sorted(zip(lengths,
-                                                                                                   spatial_lengths,
-                                                                                                   temporal_lengths,
-                                                                                                   indices)))
-
-                            # Make the event file to use in the earthquake location
-                            event_file = open('temporary_event_file', 'w')
-                            event_file.write('eventID\n' + str(magnitude_timeseries[0][n][k].split('/')[-1]) + '\n')
-                            event_file.close()
-
-                            # Begin the search with the event match with smallest length and end when a match is found
-                            # that meets the rms threshold.
-                            # NOTE: only works for reference catalog being the GeoNet catalog currently!
-                            # event_file contains the eventID from the GeoNet catalog
-                            # test_origins contains the potential match hypocentre and origin time
-                            for l in range(len(indices)):
-                                match_idx = indices[l]
-
-                                test_origins = open('temporary_test_origins', 'w')
-                                test_origins.write('latitude,longitude,depth,origin_time\n' +
-                                                   str(magnitude_timeseries[4][m][match_idx]) + ',' +
-                                                   str(magnitude_timeseries[5][m][match_idx]) + ',' +
-                                                   str(magnitude_timeseries[6][m][match_idx][:-1]) + ',' +
-                                                   str(datetime.datetime.strptime(magnitude_timeseries[1][m][match_idx],
-                                                                                  '%Y-%m-%dT%H:%M:%S.%fZ').isoformat()) +
-                                                   'Z\n')
-                                test_origins.close()
-
-                                # Convert and collate data into format expected by earthquake location code
-                                arrival_time_data, arrival_time_data_header, grid_points, grid_header, test_origins = \
-                                    earthquake_location.parse_files(eventid_file='temporary_event_file',
-                                                                    test_origins='temporary_test_origins',
-                                                                    mode='spherical')
-
-                                # Check arrival time data is non-empty, and if it is, ensure arrival is ignored
-                                if len(arrival_time_data) == 1 and len(arrival_time_data[0]) == 0:
-                                    print('No arrival time data exists for this event! It will produce no match.')
-                                    earthquake_origins, rms_errors = [[0, 0, 0, datetime.datetime.now()], [9999]]
-                                else:  # Otherwise, perform earthquake location
-                                    earthquake_origins, rms_errors = earthquake_location.test_test_origins('grid_search',
-                                                                                                           arrival_time_data,
-                                                                                                           arrival_time_data_header,
-                                                                                                           grid_points,
-                                                                                                           grid_header,
-                                                                                                           test_origins)
-                                rms_error = rms_errors[0]
-                                print('For match_idx ' + str(match_idx) + ' rms error is ' + str(rms_error))
-
-                                if rms_error <= rms_threshold:
-                                    print('Matched event ' + str(magnitude_timeseries[0][n][k]) +
-                                          ' with event at index ' + str(match_idx))
-                                    # Save the data for the match
-                                    datalist[1][event_index] = magnitude_timeseries[0][m][match_idx]
-                                    datalist[2][event_index] = str(rms_error)
-                                    datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
-                                        magnitude_timeseries[3][n][k]
-                                    datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
-                                        magnitude_timeseries[3][m][match_idx]
-                                    matched_spatial_lengths.append(spatial_lengths[indices.index(match_idx)])
-                                    matched_temporal_lengths.append(temporal_lengths[indices.index(match_idx)])
-                                    break  # break on the first matching event
-
-                            os.remove('temporary_event_file')
-                            os.remove('temporary_test_origins')
-
-                complete_pairs.append(str(n) + ',' + str(m))
+            complete_pairs.append(str(n) + ',' + str(m))
 
     if show_matching:
 
@@ -789,10 +796,10 @@ def probability(sample_magnitudes, sample_depths, sample_times,
 
 # Set data gathering parameters
 
-minmagnitude = 6  # minimum event magnitude to get from catalog
+minmagnitude = 5  # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -90, 90  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 0, -0.001  # western and eastern longitude for event search window
-starttime = '1970-01-01T00:00:00Z'  # event query starttime
+starttime = '1900-01-01T00:00:00Z'  # event query starttime
 endtime = '2021-01-01T00:00:00Z' #'2020-03-01T00:00:00'  # event query endtime, 'now' will set it to the current time
 
 if endtime == 'now':
@@ -810,11 +817,13 @@ catalogs = [[] for i in range(len(catalog_names))]
 
 # Define comparison magnitudes: first nested list is from GeoNet catalog, second if from USGS
 # Code will combine all magnitudes across the two catalogs in the final magnitude database,
-# but will only produce comparison plots for combinations across the lists. If you want to compare magnitudes from a
-# single catalog, you will need to repeat its details as both the comparison and reference catalogs etc.
+# UNLESS catalogs are the same.
+# NOTE: magnitudes are case-sensitive! Make sure you get the case right!
+# If you want to compare magnitudes across a single catalog,
+# you will need to repeat its details as both the comparison and reference catalogs.
 
 # comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
-comparison_magnitudes = [['mB'], ['MW']]
+comparison_magnitudes = [['mB', 'mb'], ['MW']]
 
 # Set matching parameters
 
