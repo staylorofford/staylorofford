@@ -1,6 +1,6 @@
 """
-Script to find a sensor's orientation using teleseismic events. Requires events be queryable from FDSN, and that the
-stations to orient contain picks and waveform data for the events available in FDSN.
+Script to find a sensor's orientation using teleseismic events. Requires events be queryable from FDSN, and that
+at least one of the stations to orient has picks (and all have waveform data) for the events available in FDSN.
 """
 
 import datetime
@@ -13,13 +13,15 @@ import numpy as np
 import numpy.ma as ma
 import obspy
 from obspy.clients.fdsn import Client
+from obspy.taup import TauPyModel
 from obspy.io.quakeml.core import Unpickler
 import os
 import pycurl
 import scipy
-from scipy.fftpack import hilbert
+import xml.etree.ElementTree as ET
 
 quakeml_reader = Unpickler()
+spherical_velocity_model = TauPyModel(model="iasp91")
 
 
 def parse_csv(csv_path, header=True):
@@ -99,94 +101,25 @@ def query_fdsn(station, location, channel, starttime, endtime):
                                   channel=channel,
                                   location=location,
                                   starttime=starttime,
-                                  endtime=endtime),
-                                  # attach_response=True)
+                                  endtime=endtime),  # For reasons unknown, this comma is very important!
     return stream
-
-
-def calculate_envelope(waveform):
-
-    """
-    Find the amplitude envelope for a waveform. Waveform can be in a numpy masked array.
-    The input can contain masked and nan elements, but nan elements take priority.
-    :param waveform: waveform data in a numpy array, or numpy masked array
-    :return: amplitude envelope of data, including masks if input
-    """
-
-    # Find period of data with no mask values and/or nan values
-    maskdices = [None, None]
-    nandices = [None, None]
-    for n in range(len(waveform) - 1):
-        if ma.is_masked(waveform[n]) and not ma.is_masked(waveform[n + 1]):
-            maskdices[0] = n + 1
-        if np.isnan(waveform[n]) and not np.isnan(waveform[n + 1]):
-            nandices[0] = n + 1
-    for n in range(1, len(waveform)):
-        if ma.is_masked(waveform[n]) and not ma.is_masked(waveform[n - 1]):
-            maskdices[1] = n
-        if np.isnan(waveform[n]) and not np.isnan(waveform[n - 1]):
-            nandices[1] = n
-
-    # Calculate the envelope for the data that is not nan or masked
-    if nandices[0] is None and nandices[1] is None:
-        if maskdices[0] is not None and maskdices[1] is not None:
-            hilb = hilbert(waveform[maskdices[0]:maskdices[1]])
-            waveform_envelope = (waveform[maskdices[0]:maskdices[1]] ** 2 + hilb ** 2) ** 0.5
-            waveform[maskdices[0]:maskdices[1]] = waveform_envelope
-        elif maskdices[0] is not None:
-            hilb = hilbert(waveform[maskdices[0]:])
-            waveform_envelope = (waveform[maskdices[0]:] ** 2 + hilb ** 2) ** 0.5
-            waveform[maskdices[0]:] = waveform_envelope
-        elif maskdices[1] is not None:
-            hilb = hilbert(waveform[:maskdices[1]])
-            waveform_envelope = (waveform[:maskdices[1]] ** 2 + hilb ** 2) ** 0.5
-            waveform[:maskdices[1]] = waveform_envelope
-        else:
-            hilb = hilbert(waveform)
-            waveform_envelope = (waveform ** 2 + hilb ** 2) ** 0.5
-            waveform = waveform_envelope
-    else:
-        if nandices[0] is not None and nandices[1] is not None:
-            hilb = hilbert(waveform[nandices[0]:nandices[1]])
-            waveform_envelope = (waveform[nandices[0]:nandices[1]] ** 2 + hilb ** 2) ** 0.5
-            waveform[nandices[0]:nandices[1]] = waveform_envelope
-        elif nandices[0] is not None:
-            hilb = hilbert(waveform[nandices[0]:])
-            waveform_envelope = (waveform[nandices[0]:] ** 2 + hilb ** 2) ** 0.5
-            waveform[nandices[0]:] = waveform_envelope
-        elif nandices[1] is not None:
-            hilb = hilbert(waveform[:nandices[1]])
-            waveform_envelope = (waveform[:nandices[1]] ** 2 + hilb ** 2) ** 0.5
-            waveform[:nandices[1]] = waveform_envelope
-        else:
-            hilb = hilbert(waveform)
-            waveform_envelope = (waveform ** 2 + hilb ** 2) ** 0.5
-            waveform = waveform_envelope
-    return waveform
 
 
 def find_lag_time(stream, reference_stream):
 
     """
-    Find the lag time between a given stream and a reference stream using cross-correlation of the vertical traces.
+    Find the lag time between a given stream and a reference stream using cross-correlation of the
+    horizontal total energy, which is independent of component alignment.
     :param stream: obspy stream object of the seismogram to calculate lag time for
     :param reference_stream: object stream object of the seismogram to use as reference for lag time calculation
     :return: lag time between the two sensors in seconds relative to the reference stream
     """
 
-    # Get vertical component data
-    for tr in stream:
-        if tr.stats.channel[-1] == 'Z':
-            stream_z = tr.data
-    for tr in reference_stream:
-        if tr.stats.channel[-1] == 'Z':
-            ref_z = tr.data
-
-    # Create normalised amplitude envelopes of the data
-    stream_envelope = calculate_envelope(stream_z)
+    # Create normalised amplitude envelopes of the data using horizontal total energy
+    stream_envelope = calculate_horizontal_total_energy(stream)
     max_se = ma.max(stream_envelope)
     stream_envelope /= max_se
-    ref_envelope = calculate_envelope(ref_z)
+    ref_envelope = calculate_horizontal_total_energy(reference_stream)
     max_re = ma.max(ref_envelope)
     ref_envelope /= max_re
 
@@ -210,7 +143,7 @@ def find_lag_time(stream, reference_stream):
         shifted_stream_envelope = np.asarray(smooth_data(shifted_stream_envelope,
                                                          int(values[parameters.index('corner_frequency')])))
 
-        # Perform cross-correlation (using only the first 30 seconds of the data to focus on first arriving data)
+        # Perform cross-correlation
         try:
             xcorr_value = np.corrcoef(shifted_stream_envelope, ref_envelope)[0][1]
         except ValueError:
@@ -289,34 +222,6 @@ def smooth_data(data, N):
     return smoothed_data
 
 
-def calculate_angle(shifted_seismogram, reference_seismogram):
-
-    """
-    Calculate the angle between the horizontal components of each sensor and those of the reference sensor.
-    Uses the method of Zheng and McMehan (2006).
-    :param shifted_seismogram: the seismogram from the station with unknown orientation, filtered, time-shifted, and 
-           without instrument response.
-    :param reference_seismogram: the seismogram from the reference station, filtered and without instrument response. 
-    :return: angle between the horizontal components of the sensors at the two stations.
-    """
-
-    # First, calculate the c1 and c2 terms in equation A-5 of Zheng and McMechan (2006).
-    c1 = 0
-    c2 = 0
-    for m in range(len(reference_seismogram)):  # Reference and shifted seismograms should have the same length
-        try:
-            c1 += ((reference_seismogram[m][0] * shifted_seismogram[m][0]) +
-                   (reference_seismogram[m][1] * shifted_seismogram[m][1]))
-            c2 += ((reference_seismogram[m][1] * shifted_seismogram[m][0]) -
-                   (reference_seismogram[m][0] * shifted_seismogram[m][1]))
-        except TypeError:  # Catch when nan values exist and skip operations for such data
-            continue
-
-    # Now, calculate the relative angle
-    relative_angle = math.degrees(math.atan2(c2, c1))
-    return relative_angle
-
-
 def find_rotation_angle(shifted_seismogram, reference_seismogram):
 
     """
@@ -327,11 +232,12 @@ def find_rotation_angle(shifted_seismogram, reference_seismogram):
     :param shifted_seismogram: the seismogram from the station with unknown orientation, filtered, time-shifted, and
            without instrument response.
     :param reference_seismogram: the seismogram from the reference station, filtered and without instrument response.
-    :return: angle between the horizontal components of the sensors at the two stations.
+    :return: counterclockwise angle between the horizontal components of the sensors at the two stations,
+            and list containing cross-correlations values at each angle between 0 and 180.
     """
 
     normalised_xcorr_values = []
-    for angle in range(0, 360):
+    for angle in range(0, 180):
         rad = math.radians(angle)
         north_component = []  # "north" component after rotation
         east_component = []  # "east" component after rotation
@@ -363,8 +269,32 @@ def find_rotation_angle(shifted_seismogram, reference_seismogram):
         normalised_xcorr_values.append(normalised_xcorr_value)
     max_xcorr_value = max(normalised_xcorr_values)
     max_xorr_value_idx = normalised_xcorr_values.index(max_xcorr_value)
-    print('Rotation angle is ' + str(max_xorr_value_idx))
-    return max_xorr_value_idx
+    plt.scatter(list(range(0, 180)), normalised_xcorr_values)
+    plt.savefig(event + '_xcorr_values.png')
+    plt.clf()
+    return max_xorr_value_idx, normalised_xcorr_values
+
+
+def FDSN_station_query(station):
+
+    """
+    Use pycurl to query station details via FDSN.
+
+    :param station: station site code
+    :return: station latitude (dec. deg.), longitude (dec. deg.), and depth (+ve direction is down, in m)
+    """
+
+    # Query station information
+    query = 'https://service.geonet.org.nz/fdsnws/station/1/query?station=' + station
+    queryresult = curl(query)
+
+    # Parse station information
+    root = ET.fromstring(queryresult.decode('utf-8'))
+    latitude = float(root[4][3][2].text)
+    longitude = float(root[4][3][3].text)
+    depth = -1 * float(root[4][3][4].text)
+
+    return latitude, longitude, depth
 
 
 if __name__ == "__main__":
@@ -384,8 +314,10 @@ if __name__ == "__main__":
         print(parameters[n] + ' = ' + values[n])
 
     # Parse files from paths given in config file
-    stations_to_orient = parse_csv(values[parameters.index('station_file')], header=False)[0]
-    events = parse_csv(values[parameters.index('eventid_file')], header=False)[0]
+    stations_to_orient = parse_csv(values[parameters.index('station_file')], header=False)
+    stations_to_orient = [item for sublist in stations_to_orient for item in sublist]
+    events = parse_csv(values[parameters.index('eventid_file')], header=False)
+    events = [item for sublist in events for item in sublist]
 
     # Define list of stations to query data from FDSN for
     query_stations = []
@@ -397,30 +329,65 @@ if __name__ == "__main__":
 
     # For each event, produce the orientation angle for each station
     all_orientation_angles = []
+    all_orientation_angle_xcorr_values = []
     for event in events:
+        print('event is ' + str(event))
         # Query event details from GeoNet FDSN
         event_details = get_event(event)[0]
-        p_times = []
         s_times = []
-        p_stations = []
         s_stations = []
         for pick in event_details.picks:
-            for station in stations_to_orient:
+            for station in query_stations:
                 if '.' + station + '.' in str(pick.resource_id):
-                    if pick.phase_hint == 'P':
-                        p_times.append(pick.time.datetime)
-                        p_stations.append(station)
-                    elif pick.phase_hint == 'S':
+                    if pick.phase_hint == 'S':
                         s_times.append(pick.time.datetime)
                         s_stations.append(station)
 
-        # Assume event duration does not exceed 3 minutes at any station
-        start_time = min(p_times) - datetime.timedelta(seconds=15)
-        end_time = start_time + datetime.timedelta(seconds=195)
+        # If event does not have picked phase arrivals, create theoretical ones
+        hypocentre = [event_details.origins[0].latitude,
+                      event_details.origins[0].longitude,
+                      event_details.origins[0].depth]
+        origin_time = event_details.origins[0].time
+        for station in query_stations:
+            try:
+                station_location = FDSN_station_query(station)
+            except:
+                # If this fails, the station is not in FDSN
+                continue
+            # Calculate epicentral distance in degrees
+            delta = math.degrees(2 * (math.asin(((math.sin(1 / 2 * math.radians(abs(hypocentre[0] -
+                                                                                    station_location[0])))) ** 2 +
+                                                 math.cos(math.radians(hypocentre[0])) *
+                                                 math.cos(math.radians(station_location[0])) *
+                                                 (math.sin(1 / 2 * math.radians(abs(hypocentre[1] -
+                                                                                    station_location[1])))) ** 2) **
+                                                (1 / 2))))
+            # Calculate theoretical travel times
+            arrivals = spherical_velocity_model.get_travel_times(source_depth_in_km=hypocentre[2] / 1000.0,
+                                                                 receiver_depth_in_km=max(
+                                                                     0.0, (station_location[2] / 1000.0)),
+                                                                 distance_in_degree=delta,
+                                                                 phase_list=['s', 'S'])
+            # Extract travel times
+            s_tt = None
+            for arrival in arrivals:
+                if arrival.name == 's' or arrival.name == 'S':
+                    s_tt = arrival.time
+                    break
+            # Save travel times, if none exist for the station
+            if station not in s_stations:
+                s_times.append(origin_time + datetime.timedelta(seconds=s_tt))
+                s_stations.append(station)
+
+        # Assume non-scattered S phase arrivals do not occur after 20 seconds after the
+        # last S first arrival at any station
+        start_time = min(s_times) - datetime.timedelta(seconds=20)
+        end_time = max(s_times) + datetime.timedelta(seconds=20)
 
         # Query waveform data from GeoNet FDSN for each station between the start and end times defined for the event
         stations = []
         streams = []
+        downsampled_streams = []
         min_times, max_times = [], []
         for station in query_stations:
             stations.append(station)
@@ -469,25 +436,32 @@ if __name__ == "__main__":
             station_stream.trim(station_stream[0].stats.starttime + 10,
                                 station_stream[0].stats.endtime - 10)
 
-            # Resample stream to twice the corner frequency
-            for trace in station_stream:
-                trace.resample(sampling_rate=2 * int(values[parameters.index('corner_frequency')]))
+            # Resample a copy of the stream to twice the corner frequency
+            downsampled_station_stream = station_stream.copy()
+            for trace in downsampled_station_stream:
+                trace.resample(2 * int(values[parameters.index('corner_frequency')]))
                 min_times.append(trace.stats.starttime)
                 max_times.append(trace.stats.endtime)
 
             streams.append(station_stream)
+            downsampled_streams.append(downsampled_station_stream)
 
         # Pad out traces to ensure an equal number of data in each
-        for stream in streams:
+        for m in range(len(streams)):
 
-            stream.trim(starttime=min(min_times),
-                        endtime=max(max_times),
-                        pad=True,
-                        fill_value=None)
+            streams[m].trim(starttime=min(min_times),
+                            endtime=max(max_times),
+                            pad=True,
+                            fill_value=None)
+            downsampled_streams[m].trim(starttime=min(min_times),
+                                        endtime=max(max_times),
+                                        pad=True,
+                                        fill_value=None)
 
         reference_station_idx = stations.index(values[parameters.index('reference_station')])
         stations.pop(reference_station_idx)
         reference_station_stream = streams.pop(reference_station_idx)
+        downsampled_rss = downsampled_streams.pop(reference_station_idx)
 
         print('All data has been loaded into the script. '
               'Finding shift times to apply to each station to align them with the reference station...')
@@ -498,99 +472,89 @@ if __name__ == "__main__":
         # values as mask fill values.
         nandices = [0, None]
         shifted_streams = streams
+        shifted_downsampled_streams = downsampled_streams
         for m in range(len(streams)):
-            # Create a copy of the station stream and cut it to be between the P arrival time and halfway into the
-            # P wave coda. Use this subset of the stream to find the time lag.
+            # Cut the lag time streams to 5 seconds before and after the S arrival at each site
+            s_station_stream = downsampled_streams[m].copy()
             try:
-                p_time = p_times[p_stations.index(stations[m])]
-            except ValueError:  # If the station doesn't have a P pick, assume it occurs at the minimum of all P picks
-                p_time = min(p_times)
+                s_station_stream.trim(starttime=s_times[s_stations.index(stations[m])] - datetime.timedelta(seconds=5),
+                                      endtime=s_times[s_stations.index(stations[m])] + datetime.timedelta(seconds=5))
+            except ValueError:
+                # When there is no s data for the station, use the minimum and maximum from the other sites
+                s_station_stream.trim(starttime=min(s_times) - datetime.timedelta(seconds=5),
+                                      endtime=max(s_times) + datetime.timedelta(seconds=5))
+            s_reference_stream = downsampled_rss.copy()
             try:
-                s_time = s_times[s_stations.index(stations[m])]
-            except ValueError:  # If the station doesn't have an S pick, assume it is 60 seconds after P pick
-                s_time = p_time + datetime.timedelta(seconds=60)
-            end_time = p_time + datetime.timedelta(seconds=(s_time - p_time).total_seconds() / 2)
-            stream_p = streams[m].copy()
-            stream_p.trim(starttime=obspy.core.utcdatetime.UTCDateTime(p_time) - 5,
-                          endtime=obspy.core.utcdatetime.UTCDateTime(end_time))
-            stream_p.trim(starttime=streams[m][0].stats.starttime,
-                          endtime=streams[m][0].stats.endtime,
-                          pad=True,
-                          fill_value=None)
-            # Perform the same operation to the reference stream, assuming wave arrivals are within 5 seconds at each
-            ref_p = reference_station_stream.copy()
-            ref_p.trim(starttime=obspy.core.utcdatetime.UTCDateTime(p_time) - 5,
-                       endtime=obspy.core.utcdatetime.UTCDateTime(end_time))
-            ref_p.trim(starttime=streams[m][0].stats.starttime,
-                       endtime=streams[m][0].stats.endtime,
-                       pad=True,
-                       fill_value=None)
-            print('Finding lag time using cut seismograms:')
-            print(stream_p)
-            print(ref_p)
-            plt.plot(ref_p[0], color='b')
-            plt.plot(stream_p[0], color='r', alpha=0.8)
-            plt.savefig('lag_time_waveforms.png')
-            plt.clf()
-            lag_time = find_lag_time(stream_p, ref_p)
+                s_reference_stream.trim(starttime=s_times[s_stations.index(values[parameters.index(
+                    'reference_station')])] - datetime.timedelta(seconds=5),
+                                      endtime=s_times[s_stations.index(values[parameters.index(
+                                          'reference_station')])] + datetime.timedelta(seconds=5))
+            except ValueError:
+                # When there is no s data for the station, use the minimum and maximum from the other sites
+                s_reference_stream.trim(starttime=min(s_times) - datetime.timedelta(seconds=5),
+                                        endtime=max(s_times) + datetime.timedelta(seconds=5))
+            lag_time = find_lag_time(s_station_stream, s_reference_stream)
             shift_idx = int(abs(lag_time * streams[m][0].stats.sampling_rate))
+            downsampled_shift_idx = int(abs(lag_time * downsampled_streams[m][0].stats.sampling_rate))
             for n in range(len(streams[m])):
 
                 # Ensure all data are masked arrays
                 if not ma.is_masked(streams[m][n].data):
                     streams[m][n].data = ma.masked_array(streams[m][n].data)
+                if not ma.is_masked(downsampled_streams[m][n].data):
+                    downsampled_streams[m][n].data = ma.masked_array(downsampled_streams[m][n].data)
 
                 # Apply shift
                 if lag_time > 0:
-                    nandices[0] = shift_idx
+                    nandices[0] = downsampled_shift_idx
                     shifted_streams[m][n].data = np.asarray([float('nan')] * shift_idx +
                                                             streams[m][n].data[:-shift_idx].filled(
                                                                 float('nan')).tolist())
+                    shifted_downsampled_streams[m][n].data = np.asarray([float('nan')] * downsampled_shift_idx +
+                                                            downsampled_streams[m][n].data[
+                                                            :-downsampled_shift_idx].filled(float('nan')).tolist())
                 else:
-                    nandices[1] = len(streams[m][n].data) - shift_idx
+                    nandices[1] = len(downsampled_streams[m][n].data) - downsampled_shift_idx
                     shifted_streams[m][n].data = np.asarray(streams[m][n].data[shift_idx:].filled(
                         float('nan')).tolist() + [float('nan')] * shift_idx)
+                    shifted_downsampled_streams[m][n].data = np.asarray(downsampled_streams[m][n].data[
+                                                                        downsampled_shift_idx:].filled(
+                        float('nan')).tolist() + [float('nan')] * downsampled_shift_idx)
 
-            print('Seismograms have been aligned to the reference station by appling a shift of ' + str(lag_time) +
-                  ' seconds to the ' + stations[m] + ' stream')
+            print(stations[m] + ' seismograms have been aligned to the reference station by appling a shift of '
+                  + str(lag_time) +' seconds')
 
         for m in range(len(reference_station_stream)):
             reference_station_stream[m].data = reference_station_stream[m].data.filled(float('nan'))
+            downsampled_rss[m].data = downsampled_rss[m].data.filled(float('nan'))
 
         print('All seismograms have now been aligned. Searching now for the optimal cross-correlation windows...')
 
         plt.plot(reference_station_stream[0], color='b')
         plt.plot(shifted_streams[0][0], color='r', alpha=0.8)
-        plt.savefig('shifted_plot.png')
+        plt.savefig(event + '_shifted_plot.png')
         plt.clf()
 
         # Find the time window of each event for which the correlation of the vertical waveforms
         # at the sensors is highest: This window is that for which the normalised cross-correlation of the
         # total energy traces of each sensor pair is highest.
-        xcorr_window_idx = []
+        xcorr_window = []
 
-        # Get vertical component data and calculate its envelope for reference stream
-        # for tr in reference_station_stream:
-            # if tr.stats.channel[-1] == 'Z':
-            #     reference_horizontal_total_energy_waveform = calculate_envelope(tr.data)
-
-        reference_horizontal_total_energy_waveform = calculate_horizontal_total_energy(reference_station_stream)
+        # Calculate horizontal total energy for the reference stream
+        reference_horizontal_total_energy_waveform = calculate_horizontal_total_energy(downsampled_rss)
         reference_horizontal_total_energy_waveform = np.asarray(smooth_data(
             reference_horizontal_total_energy_waveform, int(values[parameters.index('corner_frequency')])))
-        for m in range(len(shifted_streams)):
-            # Get vertical component data and calculate its envelope for shifted stream
-            # for tr in shifted_streams[m]:
-            #     if tr.stats.channel[-1] == 'Z':
-            #         shifted_stream_horizontal_total_energy_waveform = calculate_envelope(tr.data)
-
-            shifted_stream_horizontal_total_energy_waveform = calculate_horizontal_total_energy(shifted_streams[m])
+        for m in range(len(shifted_downsampled_streams)):
+            # Calculate horizontal total energy for the station stream
+            downsampled_sss = shifted_downsampled_streams[m].copy()
+            shifted_stream_horizontal_total_energy_waveform = calculate_horizontal_total_energy(downsampled_sss)
             shifted_stream_horizontal_total_energy_waveform = np.asarray(smooth_data(
                 shifted_stream_horizontal_total_energy_waveform, int(values[parameters.index('corner_frequency')])))
             plot1 = reference_horizontal_total_energy_waveform / np.nanmax(reference_horizontal_total_energy_waveform)
             plot2 = shifted_stream_horizontal_total_energy_waveform / np.nanmax(shifted_stream_horizontal_total_energy_waveform)
             plt.plot(plot1, color='b')
             plt.plot(plot2, color='r', alpha=0.8)
-            plt.savefig('smoothed_shifted_waveforms.png')
+            plt.savefig(event + '_smoothed_shifted_waveforms.png')
             plt.clf()
 
             # Initiate one loop to work through each possible start time in the waveform
@@ -601,7 +565,7 @@ if __name__ == "__main__":
                     break
                 # Initiate a second loop to work through each possible end time in the waveform,
                 # so that all possible windows are tested, BUT require that windows are at least 1 second in length.
-                for o in range(n + 1 * int(shifted_streams[m][0].stats.sampling_rate) + 1,
+                for o in range(n + 1 * int(shifted_downsampled_streams[m][0].stats.sampling_rate) + 1,
                                len(reference_horizontal_total_energy_waveform)):
                     if nandices[1] and o > nandices[1]:  # Don't do cross-correlation past the data
                         break
@@ -636,31 +600,35 @@ if __name__ == "__main__":
             normalised_xcorr_values = np.asarray(normalised_xcorr_values)
             max_normalised_xcorr_value_idx = np.unravel_index(np.nanargmax(normalised_xcorr_values),
                                                               normalised_xcorr_values.shape)
-            print('For station ' + stations[m] + ' maximum normalised cross-correlation value occurs between samples ' +
-                  str(max_normalised_xcorr_value_idx[0]) + '-' + str(max_normalised_xcorr_value_idx[1]) +
-                  ' in the aligned data')
+            print('For station ' + stations[m] + ' maximum normalised cross-correlation value occurs between times ' +
+                  str(downsampled_sss[0].times(type='utcdatetime')[max_normalised_xcorr_value_idx[0]]) +
+                  ' (index ' + str(max_normalised_xcorr_value_idx[0]) + ' in downsampled data) - ' +
+                  str(downsampled_sss[0].times(type='utcdatetime')[max_normalised_xcorr_value_idx[1]]) +
+                  ' in the aligned data (index ' + str(max_normalised_xcorr_value_idx[1]) + ' in the downsampled data)')
             if nandices[0] > max_normalised_xcorr_value_idx[0]:
                 print('There are ' + str(nandices[0] - max_normalised_xcorr_value_idx[0]) +
-                      ' NaN values at the front of the cross-correlation window in the aligned data')
+                      ' NaN values at the front of the cross-correlation window in the downsampled aligned data')
             if nandices[1] and nandices[1] < max_normalised_xcorr_value_idx[1]:
                 print('There are ' + str(max_normalised_xcorr_value_idx[1] - nandices[1]) +
-                      ' NaN values at the end of the cross-correlation window in the aligned data')
-            xcorr_window_idx.append(max_normalised_xcorr_value_idx)
+                      ' NaN values at the end of the cross-correlation window in the downsampled aligned data')
+            xcorr_window.append([downsampled_sss[0].times(type='utcdatetime')[
+                                     max_normalised_xcorr_value_idx[0]],
+                                 downsampled_sss[0].times(type='utcdatetime')[
+                                     max_normalised_xcorr_value_idx[1]]])
 
         print('All cross-correlation windows are now defined. The orientation angles will now be calculated...')
 
         # Perform the orientation angle calculation in the cross-correlation window
         orientation_angles = []
+        orientation_angle_xcorr_values = []
         for m in range(len(shifted_streams)):
+            print('Station is ' + str(stations[m]))
             # Make copies of data streams for shifting
             trimmed_and_shifted_streams = shifted_streams[m].copy()
             trimmed_reference_stream = reference_station_stream.copy()
-            # Convert window indices to start and end times for stream trimming prior to angle calculation
-            window_start = trimmed_and_shifted_streams[0].stats.starttime + \
-                           (1 / trimmed_and_shifted_streams[0].stats.sampling_rate * xcorr_window_idx[m][0])
-            window_end = trimmed_and_shifted_streams[0].stats.starttime + \
-                         (1 / trimmed_and_shifted_streams[0].stats.sampling_rate * xcorr_window_idx[m][1])
             # Trim data to window
+            window_start = xcorr_window[m][0]
+            window_end = xcorr_window[m][1]
             trimmed_and_shifted_streams.trim(starttime=window_start,
                                              endtime=window_end)
             trimmed_reference_stream.trim(starttime=window_start,
@@ -668,7 +636,7 @@ if __name__ == "__main__":
 
             plt.plot(trimmed_reference_stream[0], color='k')
             plt.plot(trimmed_and_shifted_streams[0], color='k')
-            plt.savefig('trimmed_and_shifted_plot.png')
+            plt.savefig(event + '_trimmed_and_shifted_plot.png')
             plt.clf()
 
             # Remove all z component data
@@ -680,28 +648,39 @@ if __name__ == "__main__":
                     trimmed_reference_stream.pop(n)
 
             # Calculate angle
-            orientation_angle = calculate_angle(trimmed_and_shifted_streams, trimmed_reference_stream)
-            print('Old method orientation angle:')
-            print(orientation_angle)
-            orientation_angle = find_rotation_angle(trimmed_and_shifted_streams, trimmed_reference_stream)
-            print('New method orientation angle:')
-            print(orientation_angle)
+            orientation_angle, xcorr_values = find_rotation_angle(trimmed_and_shifted_streams, trimmed_reference_stream)
+            print('Rotation angle is ' + str(orientation_angle))
             orientation_angles.append(orientation_angle)
+            orientation_angle_xcorr_values.append(xcorr_values)
 
         # Save orientation angles for the event
         all_orientation_angles.append(orientation_angles)
+        all_orientation_angle_xcorr_values.append(orientation_angle_xcorr_values)
 
     # Calculate average orientation angle and error from angle distributions
-    site_orientation_angles = [[] for n in range(len(stations))]
-    for m in range(len(all_orientation_angles)):
-        for n in range(len(all_orientation_angles[m])):
-            site = stations[n]
+    site_orientation_angles = [[] for n in range(len(stations_to_orient))]
+    site_orientation_angle_xcorr_values = [[[0] * 180] for n in range(len(stations_to_orient))]
+    for m in range(len(events)):
+        for n in range(len(stations_to_orient)):
+            for o in range(len(all_orientation_angle_xcorr_values[m][n])):
+                site_orientation_angle_xcorr_values[n][o] += all_orientation_angle_xcorr_values[m][n][o]
             site_orientation_angles[n].append(all_orientation_angles[m][n])
     print('\nNumber of events used for orientation is ' + str(len(events)))
     for n in range(len(site_orientation_angles)):
-        print('Site is: ' + str(stations[n]))
+        plt.scatter(list(range(0, 180)), site_orientation_angle_xcorr_values[n])
+        plt.savefig(stations_to_orient[n] + '_xcorr_values.png')
+
+        print('Site is: ' + str(stations_to_orient[n]))
+
+        # Give value from all data
+        max_xcorr_value = max(site_orientation_angle_xcorr_values[n])
+        max_xorr_value_idx = site_orientation_angle_xcorr_values[n].index(max_xcorr_value)
+        print('Stacked peak orientation angle is: ' + str(max_xorr_value_idx))
+
+        # Return values from statistics of peak values
         print('Mean orientation angle is: ' + str(np.mean(site_orientation_angles[n])))
         print('Median orientation angle is: ' + str(np.median(site_orientation_angles[n])))
         print('Orientation angle mode is: ' + str(scipy.stats.mode(site_orientation_angles[n])))
         print('Orientation angle stdev is: ' + str(np.std(site_orientation_angles[n])))
+
         print('\n')
