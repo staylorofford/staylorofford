@@ -525,8 +525,9 @@ if __name__ == "__main__":
                   + str(lag_time) +' seconds')
 
         for m in range(len(reference_station_stream)):
-            reference_station_stream[m].data = reference_station_stream[m].data.filled(float('nan'))
-            downsampled_rss[m].data = downsampled_rss[m].data.filled(float('nan'))
+            if ma.is_masked(reference_station_stream[m].data):
+                reference_station_stream[m].data = reference_station_stream[m].data.filled(float('nan'))
+                downsampled_rss[m].data = downsampled_rss[m].data.filled(float('nan'))
 
         print('All seismograms have now been aligned. Searching now for the optimal cross-correlation windows...')
 
@@ -659,7 +660,7 @@ if __name__ == "__main__":
 
     # Calculate average orientation angle and error from angle distributions
     site_orientation_angles = [[] for n in range(len(stations_to_orient))]
-    site_orientation_angle_xcorr_values = [[[0] * 180] for n in range(len(stations_to_orient))]
+    site_orientation_angle_xcorr_values = [[0] * len(list(range(0, 180))) for n in range(len(stations_to_orient))]
     for m in range(len(events)):
         for n in range(len(stations_to_orient)):
             for o in range(len(all_orientation_angle_xcorr_values[m][n])):
