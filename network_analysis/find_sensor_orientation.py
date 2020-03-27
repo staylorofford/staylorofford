@@ -101,7 +101,8 @@ def query_fdsn(station, location, channel, starttime, endtime):
                                   channel=channel,
                                   location=location,
                                   starttime=starttime,
-                                  endtime=endtime),  # For reasons unknown, this comma is very important!
+                                  endtime=endtime,
+                                  attach_response=True),  # For reasons unknown, this comma is very important!
     return stream
 
 
@@ -243,11 +244,18 @@ def find_rotation_angle(shifted_seismogram, reference_seismogram):
         east_component = []  # "east" component after rotation
 
         # Spin the seismogram components clockwise by angle
-        for m in range(len(shifted_seismogram[0])):
-            north_component.append(math.cos(rad) * shifted_seismogram[0][m] +
-                                   math.sin(rad) * shifted_seismogram[1][m])
-            east_component.append(math.sin(rad) * shifted_seismogram[0][m] +
-                                  math.cos(rad) * shifted_seismogram[1][m])
+        if 0 <= angle <= 90:
+            for m in range(len(shifted_seismogram[0])):
+                north_component.append(math.cos(rad) * shifted_seismogram[0][m] +
+                                       math.sin(rad) * shifted_seismogram[1][m])
+                east_component.append(-math.sin(rad) * shifted_seismogram[0][m] +
+                                      math.cos(rad) * shifted_seismogram[1][m])
+        elif 90 < angle < 180:
+            for m in range(len(shifted_seismogram[0])):
+                north_component.append(-math.cos(rad) * shifted_seismogram[0][m] +
+                                       math.sin(rad) * shifted_seismogram[1][m])
+                east_component.append(-math.sin(rad) * shifted_seismogram[0][m] -
+                                      math.cos(rad) * shifted_seismogram[1][m])
 
         # Cross-correlate the seismogram with the reference seismogram using horizontal total energy traces
         reference_horizontal_total_energy_waveform = \
@@ -424,6 +432,9 @@ if __name__ == "__main__":
                                             values[parameters.index('station_channels')],
                                             start_time.isoformat(),
                                             end_time.isoformat())[0]
+
+            # Remove waveform response
+            # station_stream.remove_response()
 
             # Filter the waveforms of all events to increase waveform similarly at all sensors:
             # Filter corner frequency satisfies the condition that it is much smaller than the lowest seismic velocity
@@ -664,10 +675,12 @@ if __name__ == "__main__":
     for m in range(len(events)):
         for n in range(len(stations_to_orient)):
             for o in range(len(all_orientation_angle_xcorr_values[m][n])):
+                print(site_orientation_angle_xcorr_values[n][o])
                 site_orientation_angle_xcorr_values[n][o] += all_orientation_angle_xcorr_values[m][n][o]
             site_orientation_angles[n].append(all_orientation_angles[m][n])
     print('\nNumber of events used for orientation is ' + str(len(events)))
     for n in range(len(site_orientation_angles)):
+        print(site_orientation_angle_xcorr_values[n])
         plt.scatter(list(range(0, 180)), site_orientation_angle_xcorr_values[n])
         plt.savefig(stations_to_orient[n] + '_xcorr_values.png')
 
