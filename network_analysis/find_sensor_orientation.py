@@ -257,24 +257,24 @@ def find_rotation_angle(shifted_seismogram, reference_seismogram):
                 east_component.append(-math.sin(rad) * shifted_seismogram[0][m] -
                                       math.cos(rad) * shifted_seismogram[1][m])
 
-        # Cross-correlate the seismogram with the reference seismogram using horizontal total energy traces
-        reference_horizontal_total_energy_waveform = \
-            calculate_horizontal_total_energy_from_list(reference_seismogram)
-        shifted_stream_horizontal_total_energy_waveform = \
-            calculate_horizontal_total_energy_from_list([north_component, east_component])
-        x_mean = np.nanmean(shifted_stream_horizontal_total_energy_waveform)
-        y_mean = np.nanmean(reference_horizontal_total_energy_waveform)
-        x_var = np.nanvar(shifted_stream_horizontal_total_energy_waveform)
-        y_var = np.nanvar(reference_horizontal_total_energy_waveform)
-        sum = 0
-        for m in range(min(len(reference_horizontal_total_energy_waveform),
-                           len(shifted_stream_horizontal_total_energy_waveform))):
-            sum += ((shifted_stream_horizontal_total_energy_waveform[m] - x_mean) *
-                    (reference_horizontal_total_energy_waveform[m] - y_mean))
-        normalised_xcorr_value = (1 / min(len(reference_horizontal_total_energy_waveform),
-                                          len(shifted_stream_horizontal_total_energy_waveform)) *
-                                  sum / math.sqrt(x_var * y_var))
-        normalised_xcorr_values.append(normalised_xcorr_value)
+        # Cross-correlate the seismogram with the reference seismogram
+        x_corr_mean = 0
+        spun_seismogram = [north_component, east_component]
+        for n in range(len(reference_seismogram)):
+            x_mean = np.nanmean(spun_seismogram[n])
+            y_mean = np.nanmean(reference_seismogram[n].data)
+            x_var = np.nanvar(spun_seismogram[n])
+            y_var = np.nanvar(reference_seismogram[n].data)
+            sum = 0
+            for m in range(min(len(reference_seismogram[n].data),
+                               len(spun_seismogram[n]))):
+                sum += ((spun_seismogram[n][m] - x_mean) *
+                        (reference_seismogram[n][m] - y_mean))
+            normalised_xcorr_value = (1 / min(len(reference_seismogram[n].data),
+                                              len(spun_seismogram[n])) *
+                                      sum / math.sqrt(x_var * y_var))
+            x_corr_mean += normalised_xcorr_value
+        normalised_xcorr_values.append(x_corr_mean / 2)
     max_xcorr_value = max(normalised_xcorr_values)
     max_xorr_value_idx = normalised_xcorr_values.index(max_xcorr_value)
     plt.scatter(list(range(0, 180)), normalised_xcorr_values)
@@ -420,6 +420,9 @@ if __name__ == "__main__":
                         if fnmatch.fnmatch(tr.stats.channel, values[parameters.index('reference_channels')]) is True:
                             station_stream += tr
                 station_stream.merge()
+                # Assume reference stream has opposite polarity to others and correct this
+                for tr in station_stream:
+                    tr.data = -1 * tr.data
             elif station == values[parameters.index('reference_station')]:
                 station_stream = query_fdsn(station,
                                             '??',
@@ -432,9 +435,6 @@ if __name__ == "__main__":
                                             values[parameters.index('station_channels')],
                                             start_time.isoformat(),
                                             end_time.isoformat())[0]
-
-            # Remove waveform response
-            # station_stream.remove_response()
 
             # Filter the waveforms of all events to increase waveform similarly at all sensors:
             # Filter corner frequency satisfies the condition that it is much smaller than the lowest seismic velocity
@@ -675,7 +675,6 @@ if __name__ == "__main__":
     for m in range(len(events)):
         for n in range(len(stations_to_orient)):
             for o in range(len(all_orientation_angle_xcorr_values[m][n])):
-                print(site_orientation_angle_xcorr_values[n][o])
                 site_orientation_angle_xcorr_values[n][o] += all_orientation_angle_xcorr_values[m][n][o]
             site_orientation_angles[n].append(all_orientation_angles[m][n])
     print('\nNumber of events used for orientation is ' + str(len(events)))
