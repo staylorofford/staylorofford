@@ -1,6 +1,6 @@
 """
 Script to find a sensor's orientation using teleseismic events. Requires events be queryable from FDSN, and that
-at least one of the stations to orient has picks (and all have waveform data) for the events available in FDSN.
+stations to orient have metadata and data in FDSN for the events.
 """
 
 import datetime
