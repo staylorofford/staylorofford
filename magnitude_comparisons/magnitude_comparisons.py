@@ -851,8 +851,9 @@ bin_overlap = 0.9  # percentage each time bin should overlap
 # Set what level of processing you want the script to do
 build_magnitude_timeseries = False
 build_GeoNet_Mw_timeseries = False
+gb_plotting = True
 probabilities = False
-matching = True
+matching = False
 show_matching = False
 
 # Build event catalogs from FDSN
@@ -892,6 +893,7 @@ if build_GeoNet_Mw_timeseries:
 
 starttime = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%SZ')
 endtime = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%SZ')
+
 
 if probabilities:
 
@@ -1015,13 +1017,41 @@ if probabilities:
     plt.tight_layout()
     plt.show()
 
-if matching:
+if matching or gb_plotting:
 
     # Parse all data
 
     magnitude_timeseries_files = glob.glob('./*timeseries.csv')
     magnitude_timeseries, timeseries_types = parse_data(magnitude_timeseries_files, '_timeseries',
                                                         starttime, endtime)
+
+if gb_plotting:
+
+    # Build plotting dataset
+    plt.figure()
+
+    for m in range(len(magnitude_timeseries[0])):
+
+        xdec = []
+        for n in range(len(magnitude_timeseries[0][m])):
+            xdec.append(round(float(magnitude_timeseries[3][m][n]), 1))
+        x = list(set(xdec))
+        y = [0] * len(x)
+        for xval in x:
+            y[x.index(xval)] = xdec.count(xval)
+
+        # Plot the data
+        plt.scatter(x, y, s=1)
+
+        # Add plot features for clarity
+
+        plt.xlabel('magnitude value')
+        plt.ylabel(timeseries_types[m])
+        plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
+        plt.savefig(timeseries_types[m] + '_gutenberg_richter_rel.png', format='png', dpi=300)
+        plt.close()
+
+if matching:
 
     # Do matching
 
