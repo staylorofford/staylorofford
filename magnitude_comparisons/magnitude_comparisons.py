@@ -470,7 +470,7 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                 # Don't repeat matching
                 continue
             if timeseries_types[m].split('_')[0] == timeseries_types[n].split('_')[0] and \
-                    timeseries_types[m].split('_')[2] == timeseries_types[n].split('_')[1]:
+                    timeseries_types[m].split('_')[2] == timeseries_types[n].split('_')[2]:
                 # Don't match the same data against itself
                 continue
 
@@ -491,8 +491,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                         if magnitude_timeseries[0][n][k] == magnitude_timeseries[0][m][l]:
                             datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
                                 magnitude_timeseries[3][n][k]
-                        datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
-                            magnitude_timeseries[3][m][l]
+                            datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
+                                magnitude_timeseries[3][m][l]
             elif timeseries_types[m].split('_')[0] == catalog_names[1].split('_')[0] and \
                     timeseries_types[m].split('_')[2] in comparison_magnitudes[1]:
                 # We have one of our second sets of comparison magnitudes:
@@ -849,7 +849,7 @@ bin_overlap = 0.9  # percentage each time bin should overlap
 # this, and this data should not be included in a long-term dataset trying to determine likelihood of earthquakes!
 
 # Set what level of processing you want the script to do
-build_magnitude_timeseries = True
+build_magnitude_timeseries = False
 build_GeoNet_Mw_timeseries = False
 probabilities = False
 matching = True
