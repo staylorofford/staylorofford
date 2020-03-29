@@ -652,6 +652,7 @@ def generate_tt_grid(network_data, velocity_model, mode, test_origins = None,
                                                                              receiver_depth_in_km=receiver_depth,
                                                                              distance_in_degree=delta,
                                                                              phase_list=['p', 'P', 's', 'S'])
+                        p_tt, s_tt = None, None  # Prepare travel time variables
                         for arrival in arrivals:
                             if arrival.name == 'p' or arrival.name == 'P':
                                 p_tt = arrival.time
@@ -695,6 +696,8 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
                        for x in range(len(grid_points))]
 
         # For each event, consider each grid cell as a possible location
+        max_weight = 0
+        weight_sum = 0
         for i in range(len(grid_points)):
             for j in range(len(grid_points[i])):
                 for k in range(len(grid_points[i][j])):
@@ -702,39 +705,42 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
                     # Calculate all origin times from the arrival time minus the travel time from
                     # the grid cell to each site
                     origin_times = []
-                    max_weight = 0
-                    weight_sum = 0
                     for n in range(len(arrival_time_data[m])):
-                        if isinstance(arrival_time_data[m][n], datetime.datetime):
+                        if (isinstance(arrival_time_data[m][n], datetime.datetime) and
+                                grid_points[i][j][k][translation_chart[n]]):  # Ensure data is not nan or None
                             origin_times.append(arrival_time_data[m][n] -
                                                 datetime.timedelta(seconds=grid_points[i][j][k][translation_chart[n]])
                                                 )
-                    origin_times.sort()
+                    if len(origin_times) == 0:  # If no data exists that is not nan is None
+                        # Save weight, RMS error and mean origin time as None
+                        origin_grid[i][j][k] = [None, None, None]
+                    else:
+                        origin_times.sort()
 
-                    # Calculate mean origin time
-                    ot_diffs = []
-                    for origin_time in origin_times:
-                        ot_diffs.append(origin_time - origin_times[0])
-                    mean_ot = origin_times[0] + np.mean(ot_diffs)
+                        # Calculate mean origin time
+                        ot_diffs = []
+                        for origin_time in origin_times:
+                            ot_diffs.append(origin_time - origin_times[0])
+                        mean_ot = origin_times[0] + np.mean(ot_diffs)
 
-                    # Calculate RMS error
-                    rms = 0
-                    for origin_time in origin_times:
-                        rms += (origin_time - mean_ot).total_seconds() ** 2
-                    rms = math.sqrt(rms)
+                        # Calculate RMS error
+                        rms = 0
+                        for origin_time in origin_times:
+                            rms += (origin_time - mean_ot).total_seconds() ** 2
+                        rms = math.sqrt(rms)
 
-                    # Calculate weight, maximum weight, sum of weights for confidence interval determination
-                    try:
-                        weight = 1 / (rms ** 2)
-                    except:  # If it fails, then there is only one data point, so it's weight should be very high
-                        weight = 9999
+                        # Calculate weight, maximum weight, sum of weights for confidence interval determination
+                        try:
+                            weight = 1 / (rms ** 2)
+                        except:  # If it fails, then there is only one data point, so it's weight should be very high
+                            weight = 9999
 
-                    if weight > max_weight:
-                        max_weight = weight
-                    weight_sum += weight
+                        if weight > max_weight:
+                            max_weight = weight
+                        weight_sum += weight
 
-                    # Save weight, RMS error and mean origin time
-                    origin_grid[i][j][k] = [weight, rms, mean_ot]
+                        # Save weight, RMS error and mean origin time
+                        origin_grid[i][j][k] = [weight, rms, mean_ot]
 
         # Using the weights defined, find the 95% confidence region
         if len(grid_points) * len(grid_points[0]) * len(grid_points[0][0]) > 1:  # Catch test origin case
@@ -744,10 +750,14 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
                 for i in range(len(grid_points)):
                     for j in range(len(grid_points[i])):
                         for k in range(len(grid_points[i][j])):
-                            if origin_grid[i][j][k][0] > c * max_weight:
-                                ijk.append([i, j, k])
-                                c_weight_sum += origin_grid[i][j][k][0]
-                c_weight_sum /= weight_sum
+                            if origin_grid[i][j][k][0]:
+                                if origin_grid[i][j][k][0] > c * max_weight:
+                                    ijk.append([i, j, k])
+                                    c_weight_sum += origin_grid[i][j][k][0]
+                try:
+                    c_weight_sum /= weight_sum
+                except:  # Catch when the weight sum is 0, i.e. there is no OT data at all for the event
+                    break
                 P = 1 - c_weight_sum
                 if P > 0.95:
                     break
@@ -762,6 +772,15 @@ def grid_search(arrival_time_data, arrival_time_data_header, grid_points, grid_h
                     ots.append(origin_grid[indices[0]][indices[1]][indices[2]][2])
             else:
                 print('No data exists in the 95% confidence region for this event.')
+                x_err = float('nan')
+                y_err = float('nan')
+                z_err = float('nan')
+                ots_err = float('nan')
+                mid_x = float('nan')
+                mid_y = float('nan')
+                mid_z = float('nan')
+                mid_ot = float('nan')
+                rms = float('nan')
             x_err = (max(x) - min(x)) / 2
             y_err = (max(y) - min(y)) / 2
             z_err = (max(z) - min(z)) / 2
@@ -824,9 +843,12 @@ def test_test_origins(method, arrival_time_data, arrival_time_data_header, grid_
                                                               '%Y-%m-%dT%H:%M:%S.%fZ') -
                                    earthquake_origins[-1][3][0]).total_seconds()))
         except:  # If this fails, assume it's due to a different format in the test origin
-            rms_errors.append(abs((datetime.datetime.strptime(test_origins[n][0],
-                                                              '%Y-%m-%dT%H:%M:%SZ') -
-                                   earthquake_origins[-1][3][0]).total_seconds()))
+            try:
+                rms_errors.append(abs((datetime.datetime.strptime(test_origins[n][0],
+                                                                  '%Y-%m-%dT%H:%M:%SZ') -
+                                       earthquake_origins[-1][3][0]).total_seconds()))
+            except:  # If this fails, assume it is because there is no valid data for the event
+                rms_errors.append(float('nan'))
     return earthquake_origins, rms_errors
 
 
