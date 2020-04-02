@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Extract all data from .mat file and export as csv file
+"""
+
+import glob
+import scipy.io
+
+mat_file_dir = '/home/sam/VEL4SAM/'
+
+mat_files = glob.glob(mat_file_dir + '*.mat')
+
+for mat_file in mat_files:
+
+    opendict = scipy.io.loadmat(mat_file)
+    
+    print(opendict)
+    
+    keys = list(opendict.keys())
+    
+    for key in keys:
+        
+        opendictkey = opendict[key]
+#        print(key)
+#        print(type(opendictkey))
