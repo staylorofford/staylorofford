@@ -19,7 +19,7 @@ spherical_velocity_model = TauPyModel(model="iasp91")
 minlatitude, maxlatitude = -49, -33  # minimum and maximum latitude for event
 minlongitude, maxlongitude = 163, -175  # western and eastern longitude for events
 mindepth, maxdepth = 0, 40  # minimum and maximum depth (+ve down) for events (integer only)
-dlat, dlon, dh = 0.1, 0.1, 10  # grid spacing values: difference in latitude, longitude, and height
+dlat, dlon, dh = 1, 1, 40  # grid spacing values: difference in latitude, longitude, and height
 # between grid points in each respective direction. Note: methods assumes grid spacing
 # is sufficiently small to capture all variations in the detectability. As grid is
 # defined in spherical coordinates, the operator is reminded to consider the relationship
@@ -41,10 +41,9 @@ detections_for_event = 10  # number of detections required to define an event
 detection_grouping_time = 15  # seconds between any detections for them to be grouped at a grid point
 
 # Build the grid
-
-gridx = list(range(minlongitude, maxlongitude + dlon, dlon))
-gridy = list(range(minlatitude, maxlatitude + dlat, dlat))
-gridz = list(range(mindepth, maxdepth + dh, dh))
+gridx = np.linspace(minlongitude, maxlongitude + dlon, int(math.ceil(abs(maxlongitude - minlongitude) / dlon + 1)))
+gridy = np.linspace(minlatitude, maxlatitude + dlat, int(math.ceil(abs(maxlatitude - minlatitude) / dlat + 1)))
+gridz = np.linspace(mindepth, maxdepth + dh, int(math.ceil(abs(maxdepth - mindepth) / dh + 1)))
 
 # Parse the station metadata from file
 
@@ -52,6 +51,7 @@ station_metadata = pd.read_csv(station_file, header=0, index_col=0)
 
 # Calculate distances and travel times from each grid point to each station
 
+print('Generating P wave travel times to each station from each grid point...')
 p_wave_travel_times = [[[([0] * len(station_metadata))
                          for k in range(len(gridz))]
                         for j in range(len(gridy))]
@@ -60,9 +60,9 @@ for i in range(len(gridx)):
     for j in range(len(gridy)):
         for k in range(len(gridz)):
             for m in range(len(station_metadata)):
-                hypocentre = [gridx[i], gridy[j], gridz[j]]
-                station_location = [station_metadata.iloc[m]['Latitude'],
-                                    station_metadata.iloc[m]['Longitude'],
+                hypocentre = [gridx[i], gridy[j], gridz[k]]
+                station_location = [station_metadata.iloc[m]['Longitude'],
+                                    station_metadata.iloc[m]['Latitude'],
                                     -1/1000.0 * station_metadata.iloc[m]['Elevation']]
                 # Calculate epicentral distance in degrees
                 delta = math.degrees(2 * (math.asin(((math.sin(1 / 2 * math.radians(abs(hypocentre[0] -
@@ -74,10 +74,10 @@ for i in range(len(gridx)):
                                                     (1 / 2))))
                 # Calculate arrival times of P wave
                 arrivals = spherical_velocity_model.get_travel_times(source_depth_in_km=hypocentre[2],
-                                                                     receiver_depth_in_km=min(0, station_location[2]),
+                                                                     receiver_depth_in_km=max(0, station_location[2]),
                                                                      distance_in_degree=delta,
                                                                      phase_list=['p', 'P'])
-                p_tt = None
+                p_tt = np.nan
                 for arrival in arrivals:
                     if arrival.name == 'p' or arrival.name == 'P':
                         p_tt = arrival.time
@@ -89,6 +89,8 @@ for i in range(len(gridx)):
 # So the detection system assumed to be in use is one that takes all detections occuring in a similar time period and
 # backprojects them to grid points. If N backprojected detections occur at a grid point within T time, then it considers
 # that a verification that an earthquake produces those detections and hence produces an event detection.
+
+print('Determining whether an earthquake at any grid point will produce a detection...')
 grid_point_detection_values = [[([0] * len(gridz))
                                 for j in range(len(gridy))]
                                for i in range(len(gridx))]
@@ -102,7 +104,7 @@ for i in range(len(p_wave_travel_times)):
             # Run through the sorted list and see if any N travel times occur within T time
             for m in range(len(grid_point_p_wave_travel_times) - detections_for_event):
                 dt = (grid_point_p_wave_travel_times[m + detections_for_event] -
-                      grid_point_p_wave_travel_times[m]).total_seconds()
+                      grid_point_p_wave_travel_times[m])
                 if dt <= detection_grouping_time:
                     # A detection will occur, set the detection value to True (1) and move on to the next grid point
                     grid_point_detection_values[i][j][k] = 1
@@ -110,6 +112,7 @@ for i in range(len(p_wave_travel_times)):
 
 # Plot the data in contour plots descending through the grid
 
+print('Plotting earthquake detectability at depth slices...')
 for k in range(len(gridz)):
     # Extract the data from the grid at this depth
     depth_slice = [([False] * len(gridy))
