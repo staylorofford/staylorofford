@@ -20,8 +20,9 @@ import time
 quakeml_reader = Unpickler()
 
 
-def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude, starttime='0000-01-01T00:00:00Z',
-                    endtime='9999-01-01T00:00:00Z', maxmagnitude=10):
+def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude, catalog_name,
+                    comparison_magnitudes, starttime='0000-01-01T00:00:00Z', endtime='9999-01-01T00:00:00Z',
+                    maxmagnitude=10):
 
     """
     Use obspy with pycurl to query event details from the ISC.
@@ -34,6 +35,8 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
     :param starttime:
     :param endtime:
     :param maxmagnitude:
+    :param catalog_name:
+    :param comparison_magnitudes:
     :return:
     """
 
@@ -120,7 +123,7 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
             success = True
 
     # Load all data from file
-    events = []
+    print('Loading catalog data from file...')
     with open('catalog_data.txt', 'r') as infile:
         numentries = 0
         for row in infile:
@@ -136,8 +139,11 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                     entry = ''
                 else:
                     catalog = quakeml_reader.loads(entry.encode('utf-8'))
-                    events.extend(catalog.events)
-                    print('Catalog has ' + str(len(events)) + ' events')
+                    events = catalog.events
+                    print('\nCurrent catalog has ' + str(len(events)) + ' events')
+
+                    # Append new magnitude data to files
+                    save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
                     entry = ''
             else:
                 entry += row
@@ -146,15 +152,18 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
             if entry.encode('utf-8') != b'\n<quakeml xmlns="http://quakeml.org/xmlns/quakeml/1.2">No ' \
                                         b'events were found.\n':
                 catalog = quakeml_reader.loads(entry.encode('utf-8'))
-                events.extend(catalog.events)
-                print('Catalog has ' + str(len(events)) + ' events')
+                events = catalog.events
+                print('\nCurrent catalog has ' + str(len(events)) + ' events')
+
+                # Append new magnitude data to files
+                save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
 
     return events
 
 
 def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
-                     minlatitude, maxlatitude, starttime='0000-01-01T00:00:00Z',
-                     endtime='9999-01-01T00:00:00Z', maxmagnitude=10):
+                     minlatitude, maxlatitude, catalog_name, comparison_magnitudes,
+                     starttime='0000-01-01T00:00:00Z', endtime='9999-01-01T00:00:00Z', maxmagnitude=10):
   
     """
     Use obspy with pycurl to query event catalogs from FDSN members.
@@ -168,92 +177,96 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
     :param maxlatitude:
     :param starttime:
     :param endtime:
+    :param catalog_name:
+    :param comparison_magnitudes:
     :return:
     """
 
-    # # Adjust format if required
-    # if "usgs" in service:
-    #     maxlongitude += 360
-    #
-    # # Curl FDSN response and parse quakeml bytes string through obspy
-    # # using an interative query approach when a single query fails
-    #
-    # factor = 1
-    # success = False
-    # with open('catalog_data.txt', 'w') as outfile:
-    #     pass
-    # while not success:
-    #
-    #     successes = 0
-    #
-    #     # Build time ranges for query
-    #     starttime_dt = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%SZ')
-    #     endtime_dt = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%SZ')
-    #     time_ranges = [starttime_dt]
-    #     for i in range(1, factor + 1):
-    #         time_ranges.append(time_ranges[-1] +
-    #                            datetime.timedelta(seconds=(endtime_dt - starttime_dt).total_seconds() / factor))
-    #     # Run queries
-    #     for i in range(1, len(time_ranges)):
-    #
-    #         # Build query
-    #         query = ""
-    #         query = query.join((service,
-    #                             "query?",
-    #                             "minmagnitude=",
-    #                             str(minmagnitude),
-    #                             "&maxmagnitude=",
-    #                             str(maxmagnitude),
-    #                             "&minlatitude=",
-    #                             str(minlatitude),
-    #                             "&maxlatitude=",
-    #                             str(maxlatitude),
-    #                             "&minlongitude=",
-    #                             str(minlongitude),
-    #                             "&maxlongitude=",
-    #                             str(maxlongitude),
-    #                             "&starttime=",
-    #                             time_ranges[i - 1].isoformat(),
-    #                             "&endtime=",
-    #                             time_ranges[i].isoformat()))
-    #
-    #         try:
-    #
-    #             print('\nAttempting FDSN catalog query for events between ' + str(time_ranges[i - 1]) +
-    #                   ' and ' + str(time_ranges[i]))
-    #
-    #             queryresult = curl(query)
-    #
-    #             catalog = quakeml_reader.loads(queryresult)
-    #             events = catalog.events
-    #             print('Query produced ' + str(len(events)) + ' events')
-    #             successes += 1
-    #
-    #         except:
-    #             print('Failed! Query result is:')
-    #             try:
-    #                 print(queryresult)
-    #             except:
-    #                 print('No query result!')
-    #             if successes > 0:
-    #                 print('Assuming query failed because no events exist at high magnitude range')
-    #                 successes += 1
-    #             else:
-    #                 factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
-    #                 break
-    #
-    #         # Save queryresult to file
-    #         with open('catalog_data.txt', 'a') as outfile:
-    #             outfile.write(queryresult.decode('utf-8'))
-    #
-    #     if successes == len(time_ranges) - 1:
-    #         success = True
+    # Adjust format if required
+    if "usgs" in service:
+        maxlongitude += 360
+
+    # Curl FDSN response and parse quakeml bytes string through obspy
+    # using an interative query approach when a single query fails
+
+    factor = 1
+    success = False
+    with open('catalog_data.txt', 'w') as outfile:
+        pass
+    while not success:
+
+        successes = 0
+
+        # Build time ranges for query
+        starttime_dt = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%SZ')
+        endtime_dt = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%SZ')
+        time_ranges = [starttime_dt]
+        for i in range(1, factor + 1):
+            time_ranges.append(time_ranges[-1] +
+                               datetime.timedelta(seconds=(endtime_dt - starttime_dt).total_seconds() / factor))
+        # Run queries
+        for i in range(1, len(time_ranges)):
+
+            # Build query
+            query = ""
+            query = query.join((service,
+                                "query?",
+                                "minmagnitude=",
+                                str(minmagnitude),
+                                "&maxmagnitude=",
+                                str(maxmagnitude),
+                                "&minlatitude=",
+                                str(minlatitude),
+                                "&maxlatitude=",
+                                str(maxlatitude),
+                                "&minlongitude=",
+                                str(minlongitude),
+                                "&maxlongitude=",
+                                str(maxlongitude),
+                                "&starttime=",
+                                time_ranges[i - 1].isoformat(),
+                                "&endtime=",
+                                time_ranges[i].isoformat()))
+
+            try:
+
+                print('\nAttempting FDSN catalog query for events between ' + str(time_ranges[i - 1]) +
+                      ' and ' + str(time_ranges[i]))
+
+                queryresult = curl(query)
+
+                catalog = quakeml_reader.loads(queryresult)
+                events = catalog.events
+                print('Query produced ' + str(len(events)) + ' events')
+                successes += 1
+
+            except:
+                print('Failed! Query result is:')
+                try:
+                    print(queryresult)
+                except:
+                    print('No query result!')
+                if successes > 0:
+                    print('Assuming query failed because no events exist at high magnitude range')
+                    successes += 1
+                else:
+                    factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
+                    break
+
+            # Save queryresult to file
+            with open('catalog_data.txt', 'a') as outfile:
+                outfile.write(queryresult.decode('utf-8'))
+
+        if successes == len(time_ranges) - 1:
+            success = True
 
     # Load all data from file
-    events = []
+    print('Loading catalog data from file...')
     with open('catalog_data.txt', 'r') as infile:
         numentries = 0
+        rc = -1
         for row in infile:
+            rc += 1
             row = row.strip()  # Remove leading and trailing whitespaces
             if '<?xml version="1.0" encoding="UTF-8"?>' in row and numentries == 0:
                 # Catches the start of the first entry
@@ -276,8 +289,11 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                     for m in range(len(catalog)):
                         catalog[m].amplitudes = None
                         catalog[m].station_magnitudes = None
-                    events.extend(catalog.events)
-                    print('Catalog has ' + str(len(events)) + ' events')
+                    events = catalog.events
+                    print('Current catalog has ' + str(len(events)) + ' events')
+
+                    # Append new magnitude data to files
+                    save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
                     entry = ''
             else:
                 entry += row
@@ -286,8 +302,11 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
             if entry.encode('utf-8') != b'\n<quakeml xmlns="http://quakeml.org/xmlns/quakeml/1.2">No ' \
                                         b'events were found.\n':
                 catalog = quakeml_reader.loads(entry.encode('utf-8'))
-                events.extend(catalog.events)
-                print('Catalog has ' + str(len(events)) + ' events')
+                events = catalog.events
+                print('Current catalog has ' + str(len(events)) + ' events')
+
+                # Append new magnitude data to files
+                save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
 
     return events
 
@@ -340,51 +359,48 @@ def to_cartesian(latitude, longitude, depth):
     return x, y, z
 
 
-def save_magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes):
+def save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes):
 
     """
     Saves magnitude timeseries to disk for each magnitude type in the comparison_magnitudes
     list corresponding to a given catalog
-    :param catalogs: list of lists containing obspy event objects
-    :param catalog_names: names of catalogs (for file naming)
-    :param comparison_magnitudes: list of two lists containing all magnitudes to match
-            between the catalog and the reference catalog
+    :param catalog: list containing obspy event objects
+    :param catalog_name: name of catalog (for file naming)
+    :param comparison_magnitudes: list containing all magnitudes in the given catalog to extract
     :return: saves matched events with matched magnitudes to a csv file
     """
 
-    print('\nBuilding magnitude timeseries')
-    for i in range(len(catalogs)):
-        datalist = [[[] for j in range(len(comparison_magnitudes[i]))] for k in range(8)]
-        for j in range(len(comparison_magnitudes[i])):
-            for event in catalogs[i]:
-                for magnitude in event.magnitudes:
-                    if magnitude.magnitude_type == comparison_magnitudes[i][j]:
-                            datalist[0][j].append(event.resource_id)
-                            datalist[1][j].append(event.origins[0].time)
-                            datalist[2][j].append(magnitude.magnitude_type)
-                            datalist[3][j].append(magnitude.mag)
-                            datalist[4][j].append(event.origins[0].latitude)
-                            datalist[5][j].append(event.origins[0].longitude)
-                            datalist[6][j].append(event.origins[0].depth)
-                            try:
-                                datalist[7][j].append(event.event_descriptions[0].text)
-                            except:
-                                datalist[7][j].append('')
+    print('\nBuilding magnitude timeseries...')
+    datalist = [[[] for i in range(len(comparison_magnitudes))] for k in range(8)]
+    for i in range(len(comparison_magnitudes)):
+        for event in catalog:
+            for magnitude in event.magnitudes:
+                if magnitude.magnitude_type == comparison_magnitudes[i]:
+                    datalist[0][i].append(event.resource_id)
+                    datalist[1][i].append(event.origins[0].time)
+                    datalist[2][i].append(magnitude.magnitude_type)
+                    datalist[3][i].append(magnitude.mag)
+                    datalist[4][i].append(event.origins[0].latitude)
+                    datalist[5][i].append(event.origins[0].longitude)
+                    datalist[6][i].append(event.origins[0].depth)
+                    try:
+                        datalist[7][j].append(event.event_descriptions[0].text)
+                    except:
+                        datalist[7][j].append('')
 
-            if len(datalist[0][j]) == 0:
-                continue
-            else:
-                print('Saving data to file for catalog ' + str(catalog_names[i]) + ' for magnitude type ' +
-                      str(comparison_magnitudes[i][j]) + '...')
+        if len(datalist[0][i]) == 0:
+            print('No magnitudes of type ' + comparison_magnitudes[i] + ' were found in the catalog.')
+            continue
+        else:
+            print('Saving data to file for catalog ' + catalog_name + ' for magnitude type ' +
+                  comparison_magnitudes[i] + '...')
 
-                with open(catalog_names[i] + '_' + comparison_magnitudes[i][j] + '_timeseries.csv', 'w') as outfile:
-                    outfile.write('eventID,origin_time,magnitude_type,magnitude,latitude,longitude,depth,description\n')
-                with open(catalog_names[i] + '_' + comparison_magnitudes[i][j] + '_timeseries.csv', 'a') as outfile:
-                    for n in range(len(datalist[0][j])):
-                        outfile.write(
-                            str(datalist[0][j][n]) + ',' + str(datalist[1][j][n]) + ',' + datalist[2][j][n]
-                            + ',' + str(datalist[3][j][n]) + ',' + str(datalist[4][j][n]) + ',' + str(datalist[5][j][n])
-                            + ',' + str(datalist[6][j][n]) + '\n')
+            with open(catalog_name + '_' + comparison_magnitudes[i] + '_timeseries.csv', 'a') as outfile:
+                for n in range(len(datalist[0][i])):
+                    outfile.write(
+                        str(datalist[0][i][n]) + ',' + str(datalist[1][i][n]) + ',' + datalist[2][i][n]
+                        + ',' + str(datalist[3][i][n]) + ',' + str(datalist[4][i][n]) + ',' + str(datalist[5][i][n])
+                        + ',' + str(datalist[6][i][n]) + '\n')
 
 
 def GeoNet_Mw(minmagnitude, starttime, endtime):
@@ -844,6 +860,12 @@ show_matching = False
 # Build event catalogs from FDSN
 if build_magnitude_timeseries:
 
+    # Prepare files for outputs
+    for i in range(len(catalog_names)):
+        for j in range(len(comparison_magnitudes[i])):
+            with open(catalog_names[i] + '_' + comparison_magnitudes[i][j] + '_timeseries.csv', 'w') as outfile:
+                outfile.write('eventID,origin_time,magnitude_type,magnitude,latitude,longitude,depth,description\n')
+
     print('\nSearching earthquake catalogs for events above magnitude ' + str(minmagnitude) +
           ' between ' + str(minlatitude) + ' and ' + str(maxlatitude) + ' degrees latitude and ' +
           str(minlongitude) + ' and ' + str(maxlongitude) + ' degrees longitude after ' + str(starttime)+
@@ -851,21 +873,18 @@ if build_magnitude_timeseries:
 
     ISC_catalog_idx = None
     for n in range(len(catalogs)):
+
         if catalog_names[n] == 'ISC_catalog':
             if ISC_catalog_idx is None:
                 catalogs[n] = ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude,
-                                              starttime, endtime)
-                print('\n' + str(len(catalogs[n])) + ' events were found in the ISC catalog')
+                                              catalog_names[n], comparison_magnitudes[n], starttime, endtime)
                 ISC_catalog_idx = n
             else:
                 catalogs[n] = catalogs[ISC_catalog_idx]
         else:
             catalogs[n] = FDSN_event_query(services[n], minmagnitude, minlongitude, maxlongitude,
-                                           minlatitude, maxlatitude, starttime, endtime)
-            print('\n' + str(len(catalogs[n])) + ' events were found in catalog ' + str(n + 1))
-
-    # Create a timeseries of use of each magnitude type in comparison_magnitudes for each catalog
-    save_magnitude_timeseries(catalogs, catalog_names, comparison_magnitudes)
+                                           minlatitude, maxlatitude, catalog_names[n],
+                                           comparison_magnitudes[n], starttime, endtime)
 
 # Build GeoNet Mw catalog
 
