@@ -3,12 +3,16 @@ Calculate, for a given network configuration and a given detection system, which
 detected independent of event size or attenuation.
 """
 
+import geopandas as gpd
 import math
 import numpy as np
 from obspy.taup import TauPyModel
 import pandas as pd
 import matplotlib.pyplot as plt
 
+# Parse in reference polygons
+
+outlines = gpd.read_file('./shapefiles/nz-coastlines-and-islands-polygons-topo-150k.shp')
 
 # Define velocity model
 
@@ -17,9 +21,9 @@ spherical_velocity_model = TauPyModel(model="iasp91")
 # Define the grid to calculate detection capability over
 
 minlatitude, maxlatitude = -49, -33  # minimum and maximum latitude for event
-minlongitude, maxlongitude = 163, -175  # western and eastern longitude for events
+minlongitude, maxlongitude = 163, 185  # western and eastern longitude for events
 mindepth, maxdepth = 0, 40  # minimum and maximum depth (+ve down) for events (integer only)
-dlat, dlon, dh = 1, 1, 40  # grid spacing values: difference in latitude, longitude, and height
+dlat, dlon, dh = 4, 4, 40  # grid spacing values: difference in latitude, longitude, and height
 # between grid points in each respective direction. Note: methods assumes grid spacing
 # is sufficiently small to capture all variations in the detectability. As grid is
 # defined in spherical coordinates, the operator is reminded to consider the relationship
@@ -77,7 +81,7 @@ for i in range(len(gridx)):
                                                                      receiver_depth_in_km=max(0, station_location[2]),
                                                                      distance_in_degree=delta,
                                                                      phase_list=['p', 'P'])
-                p_tt = np.nan
+                p_tt = None
                 for arrival in arrivals:
                     if arrival.name == 'p' or arrival.name == 'P':
                         p_tt = arrival.time
@@ -99,8 +103,17 @@ for i in range(len(p_wave_travel_times)):
         for k in range(len(p_wave_travel_times[i][j])):
             # We have the set M arrival times, where M is the number of stations in the network
             grid_point_p_wave_travel_times = p_wave_travel_times[i][j][k]
+
+            # Remove all stations for which a P arrival does not occur
+            tmp = []
+            for m in range(len(grid_point_p_wave_travel_times)):
+                if grid_point_p_wave_travel_times[m] is not None:
+                    tmp.append(grid_point_p_wave_travel_times[m])
+            grid_point_p_wave_travel_times = tmp
+
             # Sort the travel times
             grid_point_p_wave_travel_times.sort()
+
             # Run through the sorted list and see if any N travel times occur within T time
             for m in range(len(grid_point_p_wave_travel_times) - detections_for_event):
                 dt = (grid_point_p_wave_travel_times[m + detections_for_event] -
@@ -113,6 +126,7 @@ for i in range(len(p_wave_travel_times)):
 # Plot the data in contour plots descending through the grid
 
 print('Plotting earthquake detectability at depth slices...')
+meshgridx, meshgridy = np.meshgrid(gridx, gridy)
 for k in range(len(gridz)):
     # Extract the data from the grid at this depth
     depth_slice = [([False] * len(gridy))
@@ -120,6 +134,13 @@ for k in range(len(gridz)):
     for i in range(len(gridx)):
         for j in range(len(gridy)):
             depth_slice[i][j] = grid_point_detection_values[i][j][k]
-    # Plot the data in a countour map
-    plt.contour(gridx, gridy, depth_slice, levels=[0, 1])
-    plt.savefig('network_detectability_' + str(gridz[k]) + 'km.png')
+    depth_slice = np.asarray(depth_slice).transpose()
+
+    # Plot the data
+
+    outlines.boundary.plot(color=None, edgecolor='k')
+    plt.imshow(depth_slice, cmap='bwr', interpolation='nearest', origin='lower', aspect='auto', alpha=0.5,
+               extent=(minlongitude, maxlongitude, minlatitude, maxlatitude))
+    plt.colorbar()
+    plt.savefig('imshow_network_detectability_' + str(gridz[k]) + 'km.png')
+    plt.clf()
