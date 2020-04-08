@@ -23,7 +23,7 @@ spherical_velocity_model = TauPyModel(model="iasp91")
 minlatitude, maxlatitude = -49, -33  # minimum and maximum latitude for event
 minlongitude, maxlongitude = 163, 185  # western and eastern longitude for events
 mindepth, maxdepth = 0, 40  # minimum and maximum depth (+ve down) for events (integer only)
-dlat, dlon, dh = 4, 4, 40  # grid spacing values: difference in latitude, longitude, and height
+dlat, dlon, dh = 1, 1, 10  # grid spacing values: difference in latitude, longitude, and height
 # between grid points in each respective direction. Note: methods assumes grid spacing
 # is sufficiently small to capture all variations in the detectability. As grid is
 # defined in spherical coordinates, the operator is reminded to consider the relationship
@@ -45,9 +45,9 @@ detections_for_event = 10  # number of detections required to define an event
 detection_grouping_time = 15  # seconds between any detections for them to be grouped at a grid point
 
 # Build the grid
-gridx = np.linspace(minlongitude, maxlongitude + dlon, int(math.ceil(abs(maxlongitude - minlongitude) / dlon + 1)))
-gridy = np.linspace(minlatitude, maxlatitude + dlat, int(math.ceil(abs(maxlatitude - minlatitude) / dlat + 1)))
-gridz = np.linspace(mindepth, maxdepth + dh, int(math.ceil(abs(maxdepth - mindepth) / dh + 1)))
+gridx = np.linspace(minlongitude, maxlongitude, int(math.ceil(abs(maxlongitude - minlongitude) / dlon + 1)))
+gridy = np.linspace(minlatitude, maxlatitude, int(math.ceil(abs(maxlatitude - minlatitude) / dlat + 1)))
+gridz = np.linspace(mindepth, maxdepth, int(math.ceil(abs(maxdepth - mindepth) / dh + 1)))
 
 # Parse the station metadata from file
 
@@ -134,10 +134,9 @@ for k in range(len(gridz)):
     for i in range(len(gridx)):
         for j in range(len(gridy)):
             depth_slice[i][j] = grid_point_detection_values[i][j][k]
-    depth_slice = np.asarray(depth_slice).transpose()
+    depth_slice = np.asarray(depth_slice)
 
     # Plot the data
-
     outlines.boundary.plot(color=None, edgecolor='k')
     plt.imshow(depth_slice, cmap='bwr', interpolation='nearest', origin='lower', aspect='auto', alpha=0.5,
                extent=(minlongitude, maxlongitude, minlatitude, maxlatitude))
