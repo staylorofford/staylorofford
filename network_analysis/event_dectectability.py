@@ -134,12 +134,17 @@ for k in range(len(gridz)):
     for i in range(len(gridx)):
         for j in range(len(gridy)):
             depth_slice[i][j] = grid_point_detection_values[i][j][k]
-    depth_slice = np.asarray(depth_slice)
+    depth_slice = np.asarray(depth_slice).transpose()
 
     # Plot the data
-    outlines.boundary.plot(color=None, edgecolor='k')
+    outlines.boundary.plot(color=None, edgecolor='k', zorder=2)  # Plot NZ outline
+    plt.scatter(station_metadata['Longitude'],
+                station_metadata['Latitude'],
+                color='white',
+                edgecolors='black',
+                zorder=3)
     plt.imshow(depth_slice, cmap='bwr', interpolation='nearest', origin='lower', aspect='auto', alpha=0.5,
-               extent=(minlongitude, maxlongitude, minlatitude, maxlatitude))
+               extent=(minlongitude, maxlongitude, minlatitude, maxlatitude), zorder=1)
     plt.colorbar()
     plt.savefig('imshow_network_detectability_' + str(gridz[k]) + 'km.png')
     plt.clf()
