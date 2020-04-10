@@ -45,9 +45,10 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
 
     factor = 1
     success = False
-    with open('catalog_data.txt', 'w') as outfile:
-        pass
     while not success:
+
+        with open('catalog_data.txt', 'w') as outfile:
+            pass
 
         successes = 0
 
@@ -61,59 +62,65 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
 
         # Run queries
         for i in range(1, len(time_ranges)):
+            query_pass = False
+            while not query_pass:
 
-            # Build query
-            query = ""
-            query = query.join(('http://www.isc.ac.uk/cgi-bin/web-db-v4?'
-                                'out_format=CATQuakeML&request=COMPREHENSIVE&searchshape=RECT',
-                                '&bot_lat=', str(minlatitude),
-                                '&top_lat=', str(maxlatitude),
-                                '&left_lon=', str(minlongitude),
-                                '&right_lon=', str(maxlongitude),
-                                '&min_mag=', str(minmagnitude),
-                                '&start_year=', str(time_ranges[i - 1].year),
-                                '&start_month=', str(time_ranges[i - 1].month),
-                                '&start_day=', str(time_ranges[i - 1].day),
-                                '&start_time=', str(time_ranges[i - 1].isoformat())[:19].split('T')[1][:-1],
-                                '&end_year=', str(time_ranges[i].year),
-                                '&end_month=', str(time_ranges[i].month),
-                                '&end_day=', str(time_ranges[i].day),
-                                '&end_time=', str(time_ranges[i].isoformat())[:19].split('T')[1][:-1],
-                                '&max_mag=', str(maxmagnitude),
-                                '&req_mag_type=Any'))
+                # Build query
+                query = ""
+                query = query.join(('http://www.isc.ac.uk/cgi-bin/web-db-v4?'
+                                    'out_format=CATQuakeML&request=COMPREHENSIVE&searchshape=RECT',
+                                    '&bot_lat=', str(minlatitude),
+                                    '&top_lat=', str(maxlatitude),
+                                    '&left_lon=', str(minlongitude),
+                                    '&right_lon=', str(maxlongitude),
+                                    '&min_mag=', str(minmagnitude),
+                                    '&start_year=', str(time_ranges[i - 1].year),
+                                    '&start_month=', str(time_ranges[i - 1].month),
+                                    '&start_day=', str(time_ranges[i - 1].day),
+                                    '&start_time=', str(time_ranges[i - 1].isoformat())[:19].split('T')[1][:-1],
+                                    '&end_year=', str(time_ranges[i].year),
+                                    '&end_month=', str(time_ranges[i].month),
+                                    '&end_day=', str(time_ranges[i].day),
+                                    '&end_time=', str(time_ranges[i].isoformat())[:19].split('T')[1][:-1],
+                                    '&max_mag=', str(maxmagnitude),
+                                    '&req_mag_type=Any'))
 
-            try:
-
-                print('\nAttempting ISC catalog query for events between ' + str(time_ranges[i - 1]) +
-                      ' and ' + str(time_ranges[i]))
-
-                queryresult = curl(query)
-                if "Sorry, but your request cannot be processed at the present time." in queryresult.decode('ascii'):
-                    # Wait a minute, then try again with the same query
-                    print('Got \"Sorry, but your request cannot be processed at the present time.\" message. Waiting '
-                          'one minute and trying again.')
-                    time.sleep(60)
-                    break
-
-                catalog = quakeml_reader.loads(queryresult)
-                events = catalog.events
-                print('Query produced ' + str(len(events)) + ' events')
-                successes += 1
-
-            except:
-                print('Failed! Query result is:')
                 try:
-                    print(queryresult)
-                except:
-                    print('No query result!')
-                print('Will wait one minute before trying again.')
-                time.sleep(60)
-                if successes > 0:
-                    print('Assuming query failed because no events exist in the time window')
+
+                    print('\nAttempting ISC catalog query for events between ' + str(time_ranges[i - 1]) +
+                          ' and ' + str(time_ranges[i]))
+
+                    queryresult = curl(query)
+                    if "Sorry, but your request cannot be processed at the present time." in queryresult.decode('ascii'):
+                        # Wait a minute, then try again with the same query
+                        print('Got \"Sorry, but your request cannot be processed at the present time.\" message. Waiting '
+                              'one minute and trying again.')
+                        print('Error time: ' + str(datetime.datetime.now()))
+                        time.sleep(60)
+                        continue
+
+                    catalog = quakeml_reader.loads(queryresult)
+                    events = catalog.events
+                    print('Query produced ' + str(len(events)) + ' events')
                     successes += 1
-                else:
-                    factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
-                    break
+                    query_pass = True
+
+                except:
+                    print('Failed! Query result is:')
+                    try:
+                        print(queryresult)
+                    except:
+                        print('No query result!')
+                    print('Error time: ' + str(datetime.datetime.now()))
+                    print('Will wait one minute before trying again.')
+                    time.sleep(60)
+                    if successes > 0:
+                        print('Assuming query failed because no events exist in the time window')
+                        successes += 1
+                        query_pass = True
+                    else:
+                        factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
+                        break
 
             # Save queryresult to file
             with open('catalog_data.txt', 'a') as outfile:
@@ -191,9 +198,10 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
 
     factor = 1
     success = False
-    with open('catalog_data.txt', 'w') as outfile:
-        pass
     while not success:
+
+        with open('catalog_data.txt', 'w') as outfile:
+            pass
 
         successes = 0
 
@@ -206,52 +214,63 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                                datetime.timedelta(seconds=(endtime_dt - starttime_dt).total_seconds() / factor))
         # Run queries
         for i in range(1, len(time_ranges)):
+            query_pass = False
+            while not query_pass:
 
-            # Build query
-            query = ""
-            query = query.join((service,
-                                "query?",
-                                "minmagnitude=",
-                                str(minmagnitude),
-                                "&maxmagnitude=",
-                                str(maxmagnitude),
-                                "&minlatitude=",
-                                str(minlatitude),
-                                "&maxlatitude=",
-                                str(maxlatitude),
-                                "&minlongitude=",
-                                str(minlongitude),
-                                "&maxlongitude=",
-                                str(maxlongitude),
-                                "&starttime=",
-                                time_ranges[i - 1].isoformat(),
-                                "&endtime=",
-                                time_ranges[i].isoformat()))
+                # Build query
+                query = ""
+                query = query.join((service,
+                                    "query?",
+                                    "minmagnitude=",
+                                    str(minmagnitude),
+                                    "&maxmagnitude=",
+                                    str(maxmagnitude),
+                                    "&minlatitude=",
+                                    str(minlatitude),
+                                    "&maxlatitude=",
+                                    str(maxlatitude),
+                                    "&minlongitude=",
+                                    str(minlongitude),
+                                    "&maxlongitude=",
+                                    str(maxlongitude),
+                                    "&starttime=",
+                                    time_ranges[i - 1].isoformat(),
+                                    "&endtime=",
+                                    time_ranges[i].isoformat()))
 
-            try:
-
-                print('\nAttempting FDSN catalog query for events between ' + str(time_ranges[i - 1]) +
-                      ' and ' + str(time_ranges[i]))
-
-                queryresult = curl(query)
-
-                catalog = quakeml_reader.loads(queryresult)
-                events = catalog.events
-                print('Query produced ' + str(len(events)) + ' events')
-                successes += 1
-
-            except:
-                print('Failed! Query result is:')
                 try:
-                    print(queryresult)
-                except:
-                    print('No query result!')
-                if successes > 0:
-                    print('Assuming query failed because no events exist at high magnitude range')
+
+                    print('\nAttempting FDSN catalog query for events between ' + str(time_ranges[i - 1]) +
+                          ' and ' + str(time_ranges[i]))
+
+                    queryresult = curl(query)
+                    if "Please try again in about 30 seconds." in queryresult.decode('ascii'):
+                        # Wait a minute, then try again with the same query
+                        print('Got \"Please try again in about 30 seconds.\" Will try again in one minute.')
+                        print('Error time: ' + str(datetime.datetime.now()))
+                        time.sleep(60)
+                        continue
+
+                    catalog = quakeml_reader.loads(queryresult)
+                    events = catalog.events
+                    print('Query produced ' + str(len(events)) + ' events')
                     successes += 1
-                else:
-                    factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
-                    break
+                    query_pass = True
+
+                except:
+                    print('Failed! Query result is:')
+                    try:
+                        print(queryresult)
+                    except:
+                        print('No query result!')
+                    print('Error time: ' + str(datetime.datetime.now()))
+                    if successes > 0:
+                        print('Assuming query failed because no events exist at high magnitude range')
+                        successes += 1
+                        query_pass = True
+                    else:
+                        factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
+                        break
 
             # Save queryresult to file
             with open('catalog_data.txt', 'a') as outfile:
