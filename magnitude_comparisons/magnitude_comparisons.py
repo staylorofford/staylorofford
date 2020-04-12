@@ -165,6 +165,7 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                 # Append new magnitude data to files
                 save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
 
+    os.remove('catalog_data.txt')
     return events
 
 
@@ -327,6 +328,7 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                 # Append new magnitude data to files
                 save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
 
+    os.remove('catalog_data.txt')
     return events
 
 
@@ -403,9 +405,9 @@ def save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes):
                     datalist[5][i].append(event.origins[0].longitude)
                     datalist[6][i].append(event.origins[0].depth)
                     try:
-                        datalist[7][j].append(event.event_descriptions[0].text)
+                        datalist[7][i].append(event.event_descriptions[0].text)
                     except:
-                        datalist[7][j].append('')
+                        datalist[7][i].append('nan')
 
         if len(datalist[0][i]) == 0:
             print('No magnitudes of type ' + comparison_magnitudes[i] + ' were found in the catalog.')
@@ -419,7 +421,7 @@ def save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes):
                     outfile.write(
                         str(datalist[0][i][n]) + ',' + str(datalist[1][i][n]) + ',' + datalist[2][i][n]
                         + ',' + str(datalist[3][i][n]) + ',' + str(datalist[4][i][n]) + ',' + str(datalist[5][i][n])
-                        + ',' + str(datalist[6][i][n]) + '\n')
+                        + ',' + str(datalist[6][i][n]) + ',' + str(datalist[7][i][n]) + '\n')
 
 
 def GeoNet_Mw(minmagnitude, starttime, endtime):
@@ -495,7 +497,7 @@ def parse_data(filelist, split_str, starttime, endtime):
     """
 
     data_types = []
-    datalist = [[[] for j in range(len(filelist))] for i in range(7)]
+    datalist = [[[] for j in range(len(filelist))] for i in range(8)]
     for j in range(len(filelist)):
         file = filelist[j]
         with open(file, 'r') as infile:
@@ -508,8 +510,13 @@ def parse_data(filelist, split_str, starttime, endtime):
                     if (starttime <=
                         datetime.datetime.strptime(rowsplit[1], '%Y-%m-%dT%H:%M:%S.%fZ') <=
                         endtime):
-                        for i in range(len(rowsplit)):
-                            datalist[i][j].append(str(rowsplit[i]))
+                        for i in range(8):
+                            # Hardcoded length: will ignore description details after a comma if one exists
+                            try:
+                                datalist[i][j].append(str(rowsplit[i]))
+                            except IndexError:
+                                if i == 7:
+                                    datalist[i][j].append('')  # Replicate no description
         if len(datalist[0][j]) > 0:
             data_types.append(file.split('/')[-1].split(split_str)[0])
 
@@ -517,7 +524,7 @@ def parse_data(filelist, split_str, starttime, endtime):
 
 
 def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
-                     rms_threshold, show_matching):
+                     rms_threshold, mw_merging, show_matching):
 
     """
     Match events between two catalogs and save all events and their matched magnitudes to file
@@ -530,12 +537,13 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
     :param max_dist: maximum distance (absolute) between events for them to be matched
     :param rms_threshold: origin time difference at which events from different catalogs are considered to
            represent the same earthquake
+    :param mw_merging: whether to merge Mw values across all catalogs into a singular Mw
     :param show_matching: whether to plot relative distance and time of all events that have matched
     :return: saves matched events with matched magnitudes to a csv file
     """
 
     # Build column types for output csv (columns)
-    columns = ['eventID', 'matchID', 'RMS_error', 'latitude', 'longitude', 'depth']
+    columns = ['eventID', 'matchID', 'RMS_error', 'latitude', 'longitude', 'depth', 'description']
     magnitudes_columns = []
     for magnitude_type in timeseries_types:
         magnitudes_columns.append(magnitude_type.split('_')[-1])
@@ -543,7 +551,7 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
     magnitudes_columns.sort()
     columns.extend(magnitudes_columns)
 
-    # Generate list of events for output csv (rows)
+    # Generate list of events for output csv (rows) from reference catalog events
     event_list = []
     for n in range(len(magnitude_timeseries[0])):
         for m in range(len(magnitude_timeseries[0][n])):
@@ -552,18 +560,19 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                 event_list.append(magnitude_timeseries[0][n][m])
     event_list = list(set(event_list))
 
-    # Pre-populated eventID, location, and RMS error in datalist prior to matching
+    # Pre-populated eventID, location, and RMS error in datalist prior to matching (from reference catalog data)
     datalist = [[[] for m in range(len(event_list))] for n in range(len(columns))]
     for n in range(len(magnitude_timeseries[0])):
         for k in range(len(magnitude_timeseries[0][n])):
             try:
                 event_index = event_list.index(magnitude_timeseries[0][n][k])
                 datalist[0][event_index] = magnitude_timeseries[0][n][k]
-                datalist[2][event_index] = None  # Begin with no match
+                datalist[1][event_index] = None  # Begin with no match
                 datalist[2][event_index] = '0'  # Length 0 for internal matches: external matches will overwrite
                 datalist[3][event_index] = magnitude_timeseries[4][n][k]
                 datalist[4][event_index] = magnitude_timeseries[5][n][k]
                 datalist[5][event_index] = str(float(magnitude_timeseries[6][n][k]))  # Remove trailing newline
+                datalist[6][event_index] = magnitude_timeseries[7][n][k].rstrip('\n')  # Remove trailing newline
             except: # Fails when the event is not from the non-reference catalog
                 pass
 
@@ -585,7 +594,7 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                   ' and ' + timeseries_types[m] + '...')
             if timeseries_types[m].split('_')[0] == catalog_names[0].split('_')[0] and \
                     (timeseries_types[m].split('_')[2] in comparison_magnitudes[0] or
-                     catalog_names[0] == catalog_names[1]):
+                     timeseries_types[n].split('_')[0] == timeseries_types[m].split('_')[0]):
                 # We have another of our first sets of comparison magnitudes:
                 # This will do the internal matching routine.
                 # Find matches and load data into datalist
@@ -687,6 +696,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                         # NOTE: only works for reference catalog being the GeoNet catalog currently!
                         # event_file contains the eventID from the GeoNet catalog
                         # test_origins contains the potential match hypocentre and origin time
+                        all_rms_errors = []
+                        all_idx = []
                         for l in range(len(indices)):
                             match_idx = indices[l]
 
@@ -719,20 +730,25 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                                                                                                        test_origins)
                             rms_error = rms_errors[0]
                             print('For match_idx ' + str(match_idx) + ' rms error is ' + str(rms_error))
-
-                            if rms_error <= rms_threshold:
-                                print('Matched event ' + str(magnitude_timeseries[0][n][k]) +
-                                      ' with event at index ' + str(match_idx))
-                                # Save the data for the match
-                                datalist[1][event_index] = magnitude_timeseries[0][m][match_idx]
-                                datalist[2][event_index] = str(rms_error)
-                                datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
-                                    magnitude_timeseries[3][n][k]
-                                datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
-                                    magnitude_timeseries[3][m][match_idx]
-                                matched_spatial_lengths.append(spatial_lengths[indices.index(match_idx)])
-                                matched_temporal_lengths.append(temporal_lengths[indices.index(match_idx)])
-                                break  # break on the first matching event
+                            all_rms_errors.append(rms_error)
+                            all_idx.append(match_idx)
+                            # Once all possible matches are considered, find the one that produces the lowest RMS error.
+                            if len(all_rms_errors) == len(indices):
+                                rms_error = min(all_rms_errors)
+                                match_idx = all_idx[all_rms_errors.index(rms_error)]
+                                if rms_error <= rms_threshold:
+                                    print('Matched event ' + str(magnitude_timeseries[0][n][k]) +
+                                          ' with event at index ' + str(match_idx))
+                                    # Save the data for the match
+                                    datalist[1][event_index] = magnitude_timeseries[0][m][match_idx]
+                                    datalist[2][event_index] = str(rms_error)
+                                    datalist[columns.index(timeseries_types[n].split('_')[2])][event_index] = \
+                                        magnitude_timeseries[3][n][k]
+                                    datalist[columns.index(timeseries_types[m].split('_')[2])][event_index] = \
+                                        magnitude_timeseries[3][m][match_idx]
+                                    matched_spatial_lengths.append(spatial_lengths[indices.index(match_idx)])
+                                    matched_temporal_lengths.append(temporal_lengths[indices.index(match_idx)])
+                                    break  # break on the first matching event
 
                         os.remove('temporary_event_file')
                         os.remove('temporary_test_origins')
@@ -769,62 +785,59 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
             outfile.write(outstr[:-1] + '\n')
 
 
-def cumulative_sum(times):
+def do_plotting(datalist, m, n, data_types, description=None):
 
-    """
-    Generate a cumulative sum timeseries for event times in times
-    :param times: list of ISO8601 format times (strings)
-    :return: list of event times (datetime objects), cumulative sum at each event time (list of int)
-    """
+    # Build plotting dataset
+    plt.figure()
+    x, xdec = [], []
+    y = []
+    for k in range(len(datalist[0])):
+        if datalist[n][k][:3] != 'nan' and datalist[m][k][:3] != 'nan':
+            x.append(float(datalist[m][k]))
+            xdec.append(round(float(datalist[m][k]), 1))
+            y.append(float(datalist[n][k]))
 
-    cumulative_event_sum = 0
-    cumulative_event_sums = []
-    event_times = []
+    # Plot the data
+    plt.scatter(x, y, s=1)
 
-    # Generate cumulative sum list and list of event times
+    # Bin the y data to the corresponding x data and plot the mean value in each bin with size propotional
+    # to number of data in the bin.
+    x_vals = list(set(xdec))
+    binned_yvals = [[] for l in range(len(x_vals))]
+    for l in range(len(xdec)):
+        x_idx = x_vals.index(xdec[l])
+        binned_yvals[x_idx].append(y[l])
+    mean_yvals = [0] * len(binned_yvals)
+    n_yvals = [0] * len(binned_yvals)
+    for l in range(len(binned_yvals)):
+        mean_yvals[l] = gmean(binned_yvals[l])
+        n_yvals[l] = len(binned_yvals[l])
+    n_tot = sum(n_yvals)
+    plt.scatter(x_vals, mean_yvals, s=n_yvals, edgecolors='k', linewidths=1)
 
-    times.sort()
-    for time in times:
+    # Plot a line showing the 1:1 magnitude relationship for reference
 
-        cumulative_event_sum += 1
-        cumulative_event_sums.append(cumulative_event_sum)
+    plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=0.5, alpha=0.5)
 
-        event_time = datetime.datetime.strptime(time, '%Y-%m-%dT%H:%M:%S.%fZ')
-        event_times.append(event_time)
+    # Add plot features for clarity
 
-    return event_times, cumulative_event_sums
-
-
-def f(P, x):
-
-    """
-    Point on line function to use in orthogonal regression
-    :param P: m, c values for line
-    :param x: dataset values
-    :return point on line values for x value in x
-    """
-
-    return P[0] * x + P[1]
-
-
-def orthregress(x, y):
-
-    """
-    Perform an orthogonal distance regression,
-    :param x: dataset 1 values
-    :param y: dataset 2 values
-    :return: gradient, intercept of orthogonal distance regression
-    """
-
-    # Run orthogonal regression
-
-    model = Model(f)
-    data = Data(x, y)
-    odr = ODR(data, model, beta0=[1, 1])
-    output = odr.run()
-    m, c = output.beta
-
-    return m, c
+    plt.xlabel(data_types[m])
+    plt.ylabel(data_types[n])
+    plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
+    plt.xlim(2, 9)
+    plt.ylim(2, 9)
+    plt.gca().set_aspect('equal', adjustable='box')
+    if description is None:
+        plt.title('N=' + str(n_tot))
+        plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format='png', dpi=300)
+    else:
+        plt.title('events with description: ' + description + ', N=' + str(n_tot))
+        try:
+            plt.savefig(description + '_' + data_types[n] + '_' + data_types[m] + '.png', format='png', dpi=300)
+        except FileNotFoundError:
+            # Don't bother if the description causes file to fail to save
+            pass
+    plt.close()
 
 
 # Set data gathering parameters
@@ -842,7 +855,7 @@ if endtime == 'now':
 # query will be used instead of the FDSN catalog query.
 
 catalog_names = ['GeoNet_catalog', 'USGS_catalog']
-# catalog_names = ['GeoNet_catalog']
+# catalog_names = ['GeoNet_catalog', 'GeoNet_catalog']
 # services = ["https://service.geonet.org.nz/fdsnws/event/1/"]
 services = ["https://service.geonet.org.nz/fdsnws/event/1/", "https://earthquake.usgs.gov/fdsnws/event/1/"] # "https://service.geonet.org.nz/fdsnws/event/1/"]
 
@@ -858,7 +871,7 @@ catalogs = [[] for i in range(len(catalog_names))]
 # you will need to repeat its details as both the comparison and reference catalogs.
 
 comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
-# comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
+# comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['Mw']]
 # comparison_magnitudes = [['mB', 'mb'], ['MW']]
 
 # Set matching parameters
@@ -870,11 +883,12 @@ rms_threshold = 5  # origin time potential matches must be within (in seconds) w
                     # arrival time picks of the other in a spherical Earth grid search.
 
 # Set what level of processing you want the script to do
-build_magnitude_timeseries = True
-build_GeoNet_Mw_timeseries = True
-gb_plotting = True
-matching = True
-show_matching = False
+build_magnitude_timeseries = False  # Should the script build the magnitude timeseries, or they exist already?
+build_GeoNet_Mw_timeseries = False  # Should the script build a magnitude timeseries for the GeoNet Mw catalog?
+gb_plotting = False  # Should the script produce Gutenburg-Richter style plots?
+matching = False  # Should the script match events within and between catalogs?
+mw_merging = True  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
+show_matching = False  # Should the script show the operator those events in the match window if matching is performed?
 
 # Build event catalogs from FDSN
 if build_magnitude_timeseries:
@@ -939,15 +953,18 @@ if gb_plotting:
         for xval in x:
             y[x.index(xval)] = xdec.count(xval)
 
+        x, y = zip(*sorted(zip(x, y)))
+
         # Plot the data
-        plt.scatter(x, y, s=1)
+        plt.plot(x, y, marker='o', mec='k', mfc='white', color='k')
 
         # Add plot features for clarity
 
         plt.xlabel('magnitude value')
-        plt.ylabel(timeseries_types[m])
+        plt.ylabel('number of events')
+        plt.title(timeseries_types[m])
         plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
-        plt.savefig(timeseries_types[m] + '_gutenberg_richter_rel.png', format='png', dpi=300)
+        plt.savefig(timeseries_types[m] + '_all_events_gutenberg_richter_rel.png', format='png', dpi=300)
         plt.close()
 
 if matching:
@@ -957,7 +974,7 @@ if matching:
     print("Matching events within temporal and spatial distance limits and with the desired magnitude types")
 
     match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
-                     rms_threshold, show_matching)
+                     rms_threshold, mw_merging, show_matching)
 
 # Load magnitude match data
 
@@ -971,142 +988,108 @@ with open('./magnitude_matches_all.csv', 'r') as openfile:
             rc += 1
         else:
             rowsplit = row.split(',')
-            for i in range(len(rowsplit)):
+            for i in range(len(data_types)):
                 datalist[i].append(rowsplit[i])
+
+    if mw_merging:  # Make this work here so that data is never destroyed.
+        # Find the indices of those columns containing Mw data
+        mw_idx = None
+        additional_mw_idices = []
+        for idx, column in enumerate(data_types):
+            if column.lower()[:2] == 'mw' and mw_idx is None and 'mB' not in column:
+                # Do not consider Mw(mB) a moment magnitude
+                mw_idx = idx
+            elif column.lower()[:2] == 'mw' and 'mB' not in column:
+                # Do not consider Mw(mB) a moment magnitude
+                additional_mw_idices.append(idx)
+
+        # Rebuild columns, excluding names of the additional Mw magnitudes
+        re_columns = []
+        for idx, column in enumerate(data_types):
+            if idx not in additional_mw_idices:
+                re_columns.append(column)
+
+        # Rebuild data, merging Mw columns
+        re_datalist = [[] for n in range(len(re_columns))]
+        for n in range(len(datalist)):
+            for k in range(len(datalist[0])):
+                if n in additional_mw_idices and datalist[n][k][:3] != 'nan':
+                    datalist[mw_idx][k] = datalist[n][k]  # Set the Mw value to this Mw value
+        for n in range(len(datalist)):
+            # Recreate the datalist, but without the additional Mw columns
+            if n not in additional_mw_idices:
+                idx = re_columns.index(data_types[n])
+                re_datalist[idx] = datalist[n]
+
+        # Update data
+        data_types = re_columns
+        for idx, column in enumerate(data_types):
+            if column.lower()[:2] == 'mw' and 'mB' not in column:
+                data_types[idx] = 'unified_Mw'  # Ensure data titles reflect processing
+        datalist = re_datalist
 
 print('Saving plots...')
 
 # Magnitude value plotting
 
 complete_pairs = []
-for n in range(5, len(data_types)):
+for n in range(7, len(data_types)):
+
+    if gb_plotting:
+
+        # Build plotting dataset
+        plt.figure()
+
+        gb_xdec = []
+        for k in range(len(datalist[0])):
+            gb_xdec.append(round(float(datalist[n][k]), 1))
+        gb_x = list(set(xdec))
+        gb_y = [0] * len(x)
+        for xval in gb_x:
+            gb_y[gb_x.index(xval)] = gb_xdec.count(xval)
+
+        gb_x, gb_y = zip(*sorted(zip(gb_x, gb_y)))
+
+        # Plot the data
+        plt.plot(gb_x, gb_y, marker='o', mec='k', mfc='white', color='k')
+
+        # Add plot features for clarity
+
+        plt.xlabel('magnitude value')
+        plt.ylabel('number of events')
+        plt.title(data_types[n])
+        plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
+        plt.savefig(data_types[n] + '_matched_gutenberg_richter_rel.png', format='png', dpi=300)
+        plt.close()
+
     # Ensure reference magnitudes are only ever on the y-axis
     if data_types[n] not in comparison_magnitudes[0]:
         continue
-    for m in range(5, len(data_types)):
+    for m in range(7, len(data_types)):
         # Ensure comparison magnitudes are only ever on the x-axis
-        if data_types[m] not in comparison_magnitudes[1]:
+        if data_types[m] not in comparison_magnitudes[1] and mw_merging is False:
             continue
 
         # Don't repeat plotting
         if n == m or str(m) + ',' + str(n) in complete_pairs:
             continue
 
-        # Build plotting dataset
-        plt.figure()
-        x, xdec = [], []
-        y = []
+        # First do plotting for all data
+        do_plotting(datalist, m, n, data_types)
+
+        # Then do plotting for each subregion
+        descriptions = []
+        descriptions_idx = data_types.index('description')
         for k in range(len(datalist[0])):
-            if datalist[n][k][:3] != 'nan' and datalist[m][k][:3] != 'nan':
-                x.append(float(datalist[m][k]))
-                xdec.append(round(float(datalist[m][k]), 1))
-                y.append(float(datalist[n][k]))
+            descriptions.append(datalist[descriptions_idx][k])
+        descriptions = list(set(descriptions))
 
-        # Plot the data
-        plt.scatter(x, y, s=1)
-
-        # Bin the y data to the corresponding x data and plot the mean value in each bin with size propotional
-        # to number of data in the bin.
-        x_vals = list(set(xdec))
-        binned_yvals = [[] for l in range(len(x_vals))]
-        for l in range(len(xdec)):
-            x_idx = x_vals.index(xdec[l])
-            binned_yvals[x_idx].append(y[l])
-        mean_yvals = [0] * len(binned_yvals)
-        n_yvals = [0] * len(binned_yvals)
-        for l in range(len(binned_yvals)):
-            mean_yvals[l] = gmean(binned_yvals[l])
-            n_yvals[l] = len(binned_yvals[l])
-        n_tot = sum(n_yvals)
-        plt.scatter(x_vals, mean_yvals, s=n_yvals, edgecolors='k', linewidths=1)
-
-        # Plot a line showing the 1:1 magnitude relationship for reference
-
-        plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=0.5, alpha=0.5)
-
-        # Do an orthogonal distance regression and plot this overtop of the data, showing the
-        # linear relationship between the magnitudes
-
-        slope, intercept = orthregress(x, y)
-        plt.plot([0, 10], [intercept, slope * 10 + intercept], color='k', linewidth=0.5, alpha=0.5)
-
-        # Add plot features for clarity
-
-        plt.xlabel(data_types[m])
-        plt.ylabel(data_types[n])
-        plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
-        plt.xlim(2, 10)
-        plt.ylim(2, 10)
-        plt.title('m=' + str(slope)[:5] + ', c=' + str(intercept)[:5] + ', N=' + str(n_tot), y=1.03)
-        plt.gca().set_aspect('equal', adjustable='box')
-        plt.savefig(data_types[n] + '_' + data_types[m] + '.png', format='png', dpi=300)
-        plt.close()
+        for description in descriptions:
+            subdatalist = [[] for l in range(len(datalist))]
+            for k in range(len(datalist[0])):
+                if datalist[descriptions_idx][k] == description:
+                    for l in range(len(datalist)):
+                        subdatalist[l].append(datalist[l][k])
+            do_plotting(subdatalist, m, n, data_types, description=description)
 
         complete_pairs.append(str(n) + ',' + str(m))
-
-        # Use machine learning to fit a polynomial function to the data
-
-        import pandas as pd
-        from sklearn.linear_model import LassoCV
-        from sklearn.model_selection import train_test_split
-
-        def lasso_regression(data, predictors, alpha, models_to_plot={}):
-
-            # Test/train split
-            X_train, X_test, y_train, y_test = train_test_split(data['x'], data['y'], test_size=0.3)
-            X_train, y_train = zip(*sorted(zip(X_train, y_train)))  # Order x and y
-            X_test, y_test = zip(*sorted(zip(X_test, y_test)))  # Order x and y
-
-            train_data = pd.DataFrame(np.column_stack([X_train, y_train]), columns=['x', 'y'])
-            test_data = pd.DataFrame(np.column_stack([X_test, y_test]), columns=['x', 'y'])
-            for i in range(2, 16):  # power of 1 is already there
-                colname = 'x_%d' % i  # new var will be x_power
-                train_data[colname] = train_data['x'] ** i
-                test_data[colname] = test_data['x'] ** i
-
-            # Fit the model
-            lassoreg = LassoCV(eps=0.0001, alphas=[alpha], max_iter=1e5, normalize=True, cv=5)
-            lassoreg.fit(train_data[predictors], train_data['y'])
-            y_pred = lassoreg.predict(test_data[predictors])
-
-            # Return the result in pre-defined format
-            rss = np.sqrt(sum((y_pred - test_data['y']) ** 2))
-            ret = [rss]
-            ret.extend([lassoreg.intercept_])
-            ret.extend(lassoreg.coef_)
-
-            # Check if a plot is to be made for the entered alpha
-            if alpha in models_to_plot:
-                plt.subplot(models_to_plot[alpha])
-                plt.tight_layout()
-                plt.scatter(data['x'], data['y'], color='red', s=0.1)
-                plt.scatter(x_vals, mean_yvals, s=n_yvals, edgecolors='k', linewidths=1)
-                plt.plot(test_data['x'], y_pred, color='b', linewidth=1)
-                plt.title('Plot for alpha: %.3g' % alpha + '\n' + 'RSS: %.3g' % rss)
-
-            return ret
-
-
-        # Define data as a dataframe
-        data = pd.DataFrame(np.column_stack([x, y]), columns=['x', 'y'])
-        # data = pd.DataFrame(np.column_stack([x_vals, mean_yvals]), columns=['x', 'y'])
-
-        # Initialize predictors to all 15 powers of x
-        predictors = ['x']
-        predictors.extend(['x_%d' % i for i in range(2, 16)])
-
-        # Define the alpha values to test
-        alpha_lasso = [1e-4, 5e-4, 1e-3, 2e-3, 3e-3, 4e-3]
-
-        # Initialize the dataframe to store coefficients
-        col = ['rss', 'intercept'] + ['coef_x_%d' % i for i in range(1, 16)]
-        ind = ['alpha_%.2g' % alpha_lasso[i] for i in range(len(alpha_lasso))]
-        coef_matrix_lasso = pd.DataFrame(index=ind, columns=col)
-
-        # Define the alpha value models to plot
-        models_to_plot = {1e-4: 231, 5e-4: 232, 1e-3: 233, 2e-3: 234, 3e-3: 235, 4e-3: 236}
-
-        # Iterate over the alpha values:
-        for i in range(len(alpha_lasso)):
-            coef_matrix_lasso.iloc[i,] = lasso_regression(data, predictors, alpha_lasso[i], models_to_plot)
-        plt.show()
