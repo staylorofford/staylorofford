@@ -16,8 +16,11 @@ from obspy.clients.fdsn.header import FDSNNoDataException
 from obspy.core.stream import Stream
 from obspy.core.utcdatetime import UTCDateTime
 from obspy import read
+from os import listdir
 from os import remove
 import pandas as pd
+import queue
+import threading
 
 # Import my Python functions
 import sys
@@ -100,6 +103,28 @@ def query_fdsn(station, location, channel, starttime, endtime, client="https://s
                                   starttime=starttime,
                                   endtime=endtime)
     return stream
+
+
+def copy_files(q):
+
+    """
+    Copy files to the geonet-data bucket
+    :param q: queue object containing file prefixes
+    :return: none
+    """
+
+    while True:
+
+        client, bucket, file_key = q.get()
+
+        try:
+            client.download_file('geonet-archive',
+                                 file_key,
+                                 file_key.split('/')[-1])
+        except:
+            pass
+
+        q.task_done()
 
 
 # Give the path to the site file: a csv containing in each row the station code and location code of each site to use
@@ -248,20 +273,24 @@ for m in range(len(site_metadata)):
 
         possible_keys = create_miniseed_key_list([site_code], [location_code], [channel_code], starttime, endtime)
 
-        files = []
-        for key in possible_keys:
-            try:
-                client.download_file('geonet-archive',
-                                     key,
-                                     key.split('/')[-1])
-                files.append(key.split('/')[-1])
-            except:
-                pass
+        q = queue.Queue()
+        num_threads = 100
+        for i in range(num_threads):
+            worker = threading.Thread(target=copy_files, args=(q,))
+            worker.setDaemon(True)
+            worker.start()
 
+        for file_key in possible_keys:
+            q.put([client, 'geonet-archive', file_key])
+
+        q.join()
+
+        files = listdir('.')
         data = Stream()
         for file in files:
-            data += read(file)
-            remove(file)
+            if file[:-1] == 'D':  # A daily miniSEED file
+                data += read(file)
+                remove(file)
 
     if len(data) == 0:
         continue
