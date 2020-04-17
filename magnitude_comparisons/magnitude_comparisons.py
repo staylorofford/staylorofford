@@ -3,7 +3,6 @@ Compare earthquake magnitudes within or between their representations in earthqu
 """
 
 import datetime
-import earthquake_location
 import glob
 from io import BytesIO
 import math
@@ -15,6 +14,11 @@ import pycurl
 from scipy.stats import gmean
 from scipy.odr import Model, Data, ODR
 import time
+
+# Import my Python functions
+import sys
+sys.path.append('../duty_tools/earthquake_location/')
+import earthquake_location
 
 
 quakeml_reader = Unpickler()
