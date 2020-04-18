@@ -791,7 +791,7 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
 
 def do_plotting(datalist, m, n, data_types, description=None):
 
-    # Build plotting dataset
+    # Bin the y data to the corresponding x data and calcuate the data distribution and number of points in each bin
     plt.figure()
     x, xdec = [], []
     y = []
@@ -801,23 +801,50 @@ def do_plotting(datalist, m, n, data_types, description=None):
             xdec.append(round(float(datalist[m][k]), 1))
             y.append(float(datalist[n][k]))
 
-    # Plot the data
-    plt.scatter(x, y, s=1)
-
-    # Bin the y data to the corresponding x data and plot the mean value in each bin with size propotional
-    # to number of data in the bin.
     x_vals = list(set(xdec))
+    binned_y = [[] for l in range(len(x_vals))]
+    binned_ydec = [[] for l in range(len(x_vals))]
     binned_yvals = [[] for l in range(len(x_vals))]
-    for l in range(len(xdec)):
-        x_idx = x_vals.index(xdec[l])
-        binned_yvals[x_idx].append(y[l])
+    binned_ycounts = [[] for l in range(len(x_vals))]
     mean_yvals = [0] * len(binned_yvals)
     n_yvals = [0] * len(binned_yvals)
-    for l in range(len(binned_yvals)):
-        mean_yvals[l] = gmean(binned_yvals[l])
-        n_yvals[l] = len(binned_yvals[l])
+    for l in range(len(xdec)):
+        x_idx = x_vals.index(xdec[l])
+        binned_y[x_idx].append(y[l])
+        binned_ydec[x_idx].append(round(y[l], 1))
+    for l in range(len(x_vals)):
+        binned_yvals[l] = list(set(binned_ydec[l]))
+        for k in range(len(binned_yvals[l])):
+            binned_ycounts[l].append(binned_ydec[l].count(binned_yvals[l][k]))
+        mean_yvals[l] = gmean(binned_y[l])
+        n_yvals[l] = len(binned_y[l])
     n_tot = sum(n_yvals)
-    plt.scatter(x_vals, mean_yvals, s=n_yvals, edgecolors='k', linewidths=1)
+
+    # Scale normalise y count values for plotting
+    maxcount = 1
+    for l in range(len(binned_ycounts)):
+        for k in range(len(binned_ycounts[l])):
+            if binned_ycounts[l][k] > maxcount:
+                maxcount = binned_ycounts[l][k]
+    for l in range(len(binned_ycounts)):
+        for k in range(len(binned_ycounts[l])):
+            binned_ycounts[l][k] /= maxcount
+
+    # Plot data distribution
+    cm = plt.cm.get_cmap('RdYlBu_r')
+    for l in range(len(x_vals)):
+        colors = []
+        for k in range(len(binned_ycounts[l])):
+            colors.append(cm(binned_ycounts[l][k]))
+        plt.scatter([x_vals[l]] * len(binned_yvals[l]), binned_yvals[l], c=colors, s=10, cmap=cm)
+        if 1 in binned_ycounts[l]:
+            plt.set_cmap('RdYlBu_r')
+            cb = plt.colorbar()
+            cb.set_ticks(cb.get_ticks())
+            cb.set_ticklabels(ticklabels=[tickvalue * maxcount for tickvalue in cb.get_ticks()],
+                              update_ticks=True)
+
+    plt.scatter(x_vals, mean_yvals, s=20, edgecolors='k', linewidths=1, facecolors='None')
 
     # Plot a line showing the 1:1 magnitude relationship for reference
 
