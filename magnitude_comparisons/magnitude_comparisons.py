@@ -794,20 +794,21 @@ def do_plotting(datalist, m, n, data_types, description=None):
     # Bin the y data to the corresponding x data and calcuate the data distribution and number of points in each bin
     plt.figure()
     x, xdec = [], []
-    y = []
+    y, ydec = [], []
     for k in range(len(datalist[0])):
         if datalist[n][k][:3] != 'nan' and datalist[m][k][:3] != 'nan':
             x.append(float(datalist[m][k]))
             xdec.append(round(float(datalist[m][k]), 1))
             y.append(float(datalist[n][k]))
+            ydec.append(round(float(datalist[m][k]), 1))
 
     x_vals = list(set(xdec))
+    y_vals = list(set(ydec))
     binned_y = [[] for l in range(len(x_vals))]
     binned_ydec = [[] for l in range(len(x_vals))]
     binned_yvals = [[] for l in range(len(x_vals))]
     binned_ycounts = [[] for l in range(len(x_vals))]
-    mean_yvals = [0] * len(binned_yvals)
-    n_yvals = [0] * len(binned_yvals)
+    bin_means = [0] * len(x_vals)
     for l in range(len(xdec)):
         x_idx = x_vals.index(xdec[l])
         binned_y[x_idx].append(y[l])
@@ -816,9 +817,8 @@ def do_plotting(datalist, m, n, data_types, description=None):
         binned_yvals[l] = list(set(binned_ydec[l]))
         for k in range(len(binned_yvals[l])):
             binned_ycounts[l].append(binned_ydec[l].count(binned_yvals[l][k]))
-        mean_yvals[l] = gmean(binned_y[l])
-        n_yvals[l] = len(binned_y[l])
-    n_tot = sum(n_yvals)
+        bin_means[l] = gmean(binned_y[l])
+    n_tot = len(y)
 
     # Scale normalise y count values for plotting
     maxcount = 1
@@ -830,7 +830,7 @@ def do_plotting(datalist, m, n, data_types, description=None):
         for k in range(len(binned_ycounts[l])):
             binned_ycounts[l][k] /= maxcount
 
-    # Plot data distribution
+    # Plot data
     cm = plt.cm.get_cmap('RdYlBu_r')
     for l in range(len(x_vals)):
         colors = []
@@ -841,22 +841,45 @@ def do_plotting(datalist, m, n, data_types, description=None):
             plt.set_cmap('RdYlBu_r')
             cb = plt.colorbar()
             cb.set_ticks(cb.get_ticks())
-            cb.set_ticklabels(ticklabels=[tickvalue * maxcount for tickvalue in cb.get_ticks()],
+            cb.set_ticklabels(ticklabels=[int(round(tickvalue * maxcount)) for tickvalue in cb.get_ticks()],
                               update_ticks=True)
+            cb.set_label('data count', labelpad=15, rotation=270)
 
-    plt.scatter(x_vals, mean_yvals, s=20, edgecolors='k', linewidths=1, facecolors='None')
+    # Plot data means
+    plt.scatter(x_vals, bin_means, s=20, ec='black', fc='None', lw=1)
 
     # Plot a line showing the 1:1 magnitude relationship for reference
+    plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=1, alpha=0.8)
 
-    plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=0.5, alpha=0.5)
+    # Plot each data's distribution along the axes
+    x_distro = [0] * len(x_vals)
+    y_distro = [0] * len(y_vals)
+    for idx, x_val in enumerate(x_vals):
+        x_distro[idx] = xdec.count(x_val)
+    for idx, y_val in enumerate(y_vals):
+        y_distro[idx] = ydec.count(y_val)
+
+    plt.xlim(2, 9)
+    plt.ylim(2, 9)
+
+    if len(x_distro) > 0:
+        max_xdistro = max(x_distro)
+        for idx in range(len(x_distro)):
+            x_distro[idx] = x_distro[idx] / max_xdistro + 2
+        x_vals, x_distro = zip(*sorted(zip(x_vals, x_distro)))
+        plt.plot(x_vals, x_distro, color='k', linewidth=1)
+
+    if len(y_distro) > 0:
+        max_ydistro = max(y_distro)
+        for idx in range(len(y_distro)):
+            y_distro[idx] = y_distro[idx] / max_ydistro + 2
+        y_vals, y_distro = zip(*sorted(zip(y_vals, y_distro)))
+        plt.plot(y_distro, y_vals, color='k', linewidth=1)
 
     # Add plot features for clarity
-
     plt.xlabel(data_types[m])
     plt.ylabel(data_types[n])
     plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
-    plt.xlim(2, 9)
-    plt.ylim(2, 9)
     plt.gca().set_aspect('equal', adjustable='box')
     if description is None:
         plt.title('N=' + str(n_tot))
@@ -1121,6 +1144,7 @@ for n in range(7, len(data_types)):
                 if datalist[descriptions_idx][k] == description:
                     for l in range(len(datalist)):
                         subdatalist[l].append(datalist[l][k])
-            do_plotting(subdatalist, m, n, data_types, description=description)
+            if len(subdatalist[0]) > 1:
+                do_plotting(subdatalist, m, n, data_types, description=description)
 
         complete_pairs.append(str(n) + ',' + str(m))
