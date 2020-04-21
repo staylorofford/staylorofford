@@ -126,9 +126,10 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                         factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
                         break
 
-            # Save queryresult to file
-            with open('catalog_data.txt', 'a') as outfile:
-                outfile.write(queryresult.decode('utf-8'))
+            if query_pass is True:
+                # Save queryresult to file
+                with open('catalog_data.txt', 'a') as outfile:
+                    outfile.write(queryresult.decode('utf-8'))
 
         if successes == len(time_ranges) - 1:
             success = True
@@ -277,9 +278,10 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                         factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
                         break
 
-            # Save queryresult to file
-            with open('catalog_data.txt', 'a') as outfile:
-                outfile.write(queryresult.decode('utf-8'))
+            if query_pass is True:
+                # Save queryresult to file
+                with open('catalog_data.txt', 'a') as outfile:
+                    outfile.write(queryresult.decode('utf-8'))
 
         if successes == len(time_ranges) - 1:
             success = True
@@ -910,6 +912,7 @@ if endtime == 'now':
 
 catalog_names = ['GeoNet_catalog', 'USGS_catalog']
 # catalog_names = ['GeoNet_catalog', 'GeoNet_catalog']
+catalog_names = ['ISC_catalog', 'ISC_catalog']
 # services = ["https://service.geonet.org.nz/fdsnws/event/1/"]
 services = ["https://service.geonet.org.nz/fdsnws/event/1/", "https://earthquake.usgs.gov/fdsnws/event/1/"] # "https://service.geonet.org.nz/fdsnws/event/1/"]
 
@@ -924,9 +927,9 @@ catalogs = [[] for i in range(len(catalog_names))]
 # If you want to compare magnitudes across a single catalog,
 # you will need to repeat its details as both the comparison and reference catalogs.
 
-comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
+# comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
 # comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['Mw']]
-# comparison_magnitudes = [['mB', 'mb'], ['MW']]
+comparison_magnitudes = [['mB', 'mb'], ['MW']]
 
 # Set matching parameters
 
@@ -937,11 +940,11 @@ rms_threshold = 5  # origin time potential matches must be within (in seconds) w
                     # arrival time picks of the other in a spherical Earth grid search.
 
 # Set what level of processing you want the script to do
-build_magnitude_timeseries = False  # Should the script build the magnitude timeseries, or they exist already?
+build_magnitude_timeseries = True  # Should the script build the magnitude timeseries, or they exist already?
 build_GeoNet_Mw_timeseries = False  # Should the script build a magnitude timeseries for the GeoNet Mw catalog?
-gb_plotting = False  # Should the script produce Gutenburg-Richter style plots?
-matching = False  # Should the script match events within and between catalogs?
-mw_merging = True  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
+gb_plotting = True  # Should the script produce Gutenburg-Richter style plots?
+matching = True  # Should the script match events within and between catalogs?
+mw_merging = False  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
 show_matching = False  # Should the script show the operator those events in the match window if matching is performed?
 
 # Build event catalogs from FDSN
