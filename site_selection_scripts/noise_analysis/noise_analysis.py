@@ -78,5 +78,8 @@ for m, site in enumerate(sites):
                               cmap=pqlx,
                               filename=all_ppsd_names[n] + '.png',
                               show=False)
+            all_ppsds[n].plot_temporal(filename=all_ppsd_names[n] + '_temporal_fbands.png',
+                                       show=False)
             all_ppsds[n].plot_spectrogram(filename=all_ppsd_names[n] + '_spectrogram.png',
                                           show=False)
+            all_ppsds[n].save_npz(all_ppsd_names[n])
