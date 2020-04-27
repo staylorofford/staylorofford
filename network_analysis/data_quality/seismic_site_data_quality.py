@@ -14,12 +14,14 @@ from obspy.clients.fdsn import Client
 from obspy.clients.fdsn.header import FDSNNoDataException
 from obspy.core.stream import Stream
 from obspy.core.utcdatetime import UTCDateTime
+from obspy.signal import PPSD
 from obspy import read
 from os import listdir
 from os import remove
 import pandas as pd
 import queue
 import threading
+import time
 
 # Import my Python functions
 import sys
@@ -28,7 +30,7 @@ from assume_role import assume_role
 from create_key_list import create_miniseed_key_list
 
 
-def calculate_data_quality(data, filter_type, minimum_frequency, maximum_frequency, data_source, starttime, endtime):
+def calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency, starttime, endtime):
 
     """
     Calculate data quality via data completeness and RMS value.
@@ -36,29 +38,12 @@ def calculate_data_quality(data, filter_type, minimum_frequency, maximum_frequen
     :param filter_type: obspy filter type
     :param minimum_frequency: minimum frequency to use in filter
     :param maximum_frequency: maximum frequency to use in filter
-    :param data_source: where the data is from, FDSN or S3: sets how to calculate completeness
     :param starttime: start time of data query, for FDSN completeness calculation, as ISO8601 string
     :param endtime: end time of data query, for FDSN completeness calculation, as ISO8601 string
-    :return: data completeness as a percentage, data RMS value, number of data values
+    :return: data RMS value, number of data values
     """
 
-    # Subtract a running mean of 10 second duration from the data to remove the influence of long periods
-    if (data[0].stats.endtime - data[0].stats.starttime) < 10:
-        running_mean = np.nanmean(data[0].data)
-        for n in range(len(data[0].data)):
-            data[0].data[n] -= running_mean
-    else:
-        running_mean = []
-        for n in range(5 * int(data[0].stats.sampling_rate),
-                       len(data[0].data) - 5 * int(data[0].stats.sampling_rate)):
-            running_mean.append(np.nanmean(data[0].data[n - 5 * int(data[0].stats.sampling_rate):
-                                                     n + 5 * int(data[0].stats.sampling_rate)]))
-        for n in range(5 * int(data[0].stats.sampling_rate),
-                       len(data[0].data) - 5 * int(data[0].stats.sampling_rate)):
-            data[0].data[n] -= running_mean[n - 5 * int(data[0].stats.sampling_rate)]
-        # Remove data that was not adjusted by the running mean subtraction
-        data[0].data = data[0].data[5 * int(data[0].stats.sampling_rate):
-                                    len(data[0].data) - 5 * int(data[0].stats.sampling_rate)]
+    pst = time.perf_counter()
 
     # Apply a filter to the data
     if filter_type:
@@ -66,40 +51,41 @@ def calculate_data_quality(data, filter_type, minimum_frequency, maximum_frequen
                            freqmin=minimum_frequency,
                            freqmax=maximum_frequency)
 
-    # Calculate the RMS value for the data
-    RMS = 0
-    data_N = 0
-    mean = np.nanmean(np.abs(data[0].data))
-    for n in range(len(data[0].data)):
-        if not np.isnan(data[0].data[n]):
-            RMS += math.pow((mean - data[0].data[n]), 2)
-            data_N += 1
-    if data_N != 0:
-        RMS = math.sqrt(RMS / data_N)
-    else:
-        RMS = np.nan
+    # Build probabilistic power spectral density objects for each trace
+    client = Client("https://service.geonet.org.nz")
+    metadata = client.get_stations(network='NZ',
+                                   station=data[0].stats.station,
+                                   location=data[0].stats.location,
+                                   channel=data[0].stats.channel,
+                                   starttime=UTCDateTime(starttime),
+                                   endtime=UTCDateTime(endtime),
+                                   level='response')
+    ppsd = PPSD(data[0].stats, metadata)
+    ppsd.add(data[0])
 
-    # Calculate completeness
-    if data_source == 'FDSN':
-        expected_data = (endtime - starttime).total_seconds() * data[0].stats.sampling_rate
-        if expected_data > 0:
-            completeness = 100 * data_N / expected_data
-        else:
-            completeness = 0
-    elif data_source == 'S3':
-        expected_data = data[0].stats.sampling_rate * 86400
-        completeness = data_N / expected_data
+    # Find RMS value from PPSD.
+    # 1) Take the mean value of PPSD in given frequency window as the PSD value
+    # 2) Calculate weighted mean of PSD values in all windows using frequency window width as weights and scaling the
+    # acceleration squared values by the window centre frequency squared to convert the result into velocity squared.
+    # Also convert the data values out of dB scale as precursor to this.
+    # 3) Take sqrt of weighted mean, as data are squared when processed to produce PSD. This gives the RMS value.
+    weighted_mean, weight_sum = 0, 0
+    _, mean_psds = ppsd.get_mean()
+    psd_widths = [1/ppsd.period_bin_left_edges[n] - 1/ppsd.period_bin_right_edges[n]
+                  for n in range(len(ppsd.period_bin_left_edges))]
+    psd_centres = [1/ppsd.period_bin_centers[n] for n in range(len(ppsd.period_bin_centers))]
+    for n in range(len(mean_psds)):
+        weighted_mean += math.sqrt(10**(mean_psds[n] / 10) / (psd_centres[n] ** 2)) * psd_widths[n]
+        weight_sum += psd_widths[n]
+    weighted_mean /= weight_sum
+    pet = time.perf_counter()
+    print('Processing that data took ' + str((pet - pst) / 60.0) + ' minutes.')
 
-    print('For data:')
-    print(data)
-    print('Completeness is: ' + str(completeness))
-    print('RMS is: ' + str(RMS))
-    print('N is: ' + str(data_N) + '\n')
-
-    return completeness, RMS, data_N
+    return weighted_mean, ppsd
 
 
 def query_fdsn(station, location, channel, starttime, endtime, client="https://service.geonet.org.nz"):
+
     """
     Query FDSN for timeseries data. Input parameter can be specific or include ? wildcard
     :param: station: site code to get data from (string)
@@ -111,6 +97,7 @@ def query_fdsn(station, location, channel, starttime, endtime, client="https://s
             https://service.geonet.org.nz (archive) or https://service-nrt.geonet.org.nz (last week)
     :return: obspy stream object containing requested data
     """
+
     client = Client(client)
     stream = client.get_waveforms(network='NZ',
                                   station=station,
@@ -155,7 +142,7 @@ site_file = '/home/samto/git/delta/network/sites.csv'
 channel_code = 'HHZ'  # Channel code to query
 starttime = '2019-01-01T00:00:00Z'  # starttime can either be an ISO8601 string, or an integer number of seconds to
                                     # query data for before the endtime.
-endtime = '2019-01-02T00:00:01Z'  # endtime can be an ISO8601 string or 'now', if 'now' then endtime
+endtime = '2019-01-05T00:00:01Z'  # endtime can be an ISO8601 string or 'now', if 'now' then endtime
                                   # will be set to the current UTC time. If using S3 data_source, make endtime at least
                                   # 1 second into the final day of data you want to use.
 
@@ -190,8 +177,7 @@ site_metadata = pd.read_csv(site_file, header=0, index_col=0)
 
 # Prepare output file
 with open('seismic_site_data_quality_output.csv', 'w') as outfile:
-    outfile.write('Station,Longitude,Latitude,Starttime,Endtime,Filter,Freqmin,Freqmax,RMS,Mean_RMS,Completeness,'
-                  'Mean_Completeness\n')
+    outfile.write('Station,Longitude,Latitude,Starttime,Endtime,Filter,Freqmin,Freqmax,RMS\n')
 
 # Prepare data query variables depending on data_source
 if data_source == 'FDSN':
@@ -210,6 +196,14 @@ if data_source == 'FDSN':
 elif data_source == 'S3':
     # Prepare the boto3 client to work with S3
     client = assume_role(role, user, duration)
+
+    # Prepare the workers for parallel processing
+    q = queue.Queue()
+    num_threads = 100
+    for i in range(num_threads):
+        worker = threading.Thread(target=copy_files, args=(q,))
+        worker.setDaemon(True)
+        worker.start()
 
 else:
     print('data_source needs to be set to either \'FDSN\' or \'S3\' for the script to perform work.')
@@ -292,18 +286,26 @@ for m in range(len(site_metadata)):
                 data = Stream()
 
         if len(data) == 0:
+            # Save non-results
+
+            with open('seismic_site_data_quality_output.csv', 'a') as outfile:
+                outfile.write(site_code + ',' +
+                              str(site_metadata.iloc[m]['Longitude']) + ',' +
+                              str(site_metadata.iloc[m]['Latitude']) + ',' +
+                              starttime.isoformat() + ',' +
+                              endtime.isoformat() + ',' +
+                              filter_type + ',' +
+                              str(minimum_frequency) + ',' +
+                              str(maximum_frequency) + ',' +
+                              str(np.nan) + ',' +
+                              str(np.nan) + ',' +
+                              str(np.nan) + ',' +
+                              str(np.nan) + '\n')
             continue
 
     elif data_source == 'S3':
 
         possible_keys = create_miniseed_key_list([site_code], [location_code], [channel_code], starttime, endtime)
-
-        q = queue.Queue()
-        num_threads = 100
-        for i in range(num_threads):
-            worker = threading.Thread(target=copy_files, args=(q,))
-            worker.setDaemon(True)
-            worker.start()
 
         for file_key in possible_keys:
             q.put([client, 'geonet-archive', file_key])
@@ -316,9 +318,8 @@ for m in range(len(site_metadata)):
 
     if data_source == 'FDSN':
 
-        completeness, RMS, _ = calculate_data_quality(data, filter_type, minimum_frequency, maximum_frequency,
-                                                      data_source, starttime, endtime)
-        mean_RMS = np.nan  # There is no mean RMS using this source: the only RMS value is the one for the whole dataset
+        mean_RMS, _ = calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency,
+                                                       starttime, endtime)
 
     elif data_source == 'S3':
 
@@ -327,45 +328,43 @@ for m in range(len(site_metadata)):
         # is done due to the large data volumes encountered using this data source.
 
         files = listdir('.')
-        completenesses, RMSs, Ns = [], [], []
+        RMSs, ppsds = [], []
         for file in files:
             if file[-1:] == 'D' and site_code in file and location_code in file:
                 print('Calculating data quality for file ' + file)
                 data = read(file)
-                daily_completeness, daily_RMS, daily_data_number = calculate_data_quality(data, filter_type,
-                                                                                          minimum_frequency,
-                                                                                          maximum_frequency,
-                                                                                          data_source,
-                                                                                          starttime, endtime)
-                completenesses.append(daily_completeness)
+                daily_RMS, ppsd = calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency,
+                                                       starttime, endtime)
                 RMSs.append(daily_RMS)
-                Ns.append(daily_data_number)
+                # PPSD: need to find a way to compare the noise value returned from this (which is what, a mean?)
+                # to the RMS value determined from timeseries data. May require some digging into literature, but
+                # have timeseries mean value for comparison.
+                ppsds.append(ppsd)
                 remove(file)
-        if len(completenesses) == 0:
+        if len(RMSs) == 0:
             print('There was no data, moving onto next station.')
+            # Save non-results
+
+            with open('seismic_site_data_quality_output.csv', 'a') as outfile:
+                outfile.write(site_code + ',' +
+                              str(site_metadata.iloc[m]['Longitude']) + ',' +
+                              str(site_metadata.iloc[m]['Latitude']) + ',' +
+                              starttime.isoformat() + ',' +
+                              endtime.isoformat() + ',' +
+                              filter_type + ',' +
+                              str(minimum_frequency) + ',' +
+                              str(maximum_frequency) + ',' +
+                              str(np.nan) + ',' +
+                              str(np.nan) + ',' +
+                              str(np.nan) + ',' +
+                              str(np.nan) + '\n')
             continue
 
         # Calculate mean completeness, RMS
-        mean_completeness = np.mean(completenesses)
         mean_RMS = np.nanmean(RMSs)  # The mean RMS is the mean of daily RMS values
-        # Calculate overall completeness, RMS
-        completeness = math.ceil((endtime - starttime).total_seconds() / 86400) * 86400 * \
-                       data[0].stats.sampling_rate / sum(Ns)
-        RMS = 0
-        for n in range(len(RMSs)):
-            if not np.isnan(RMSs[n]):
-                RMS += math.pow(RMSs[n], 2) * Ns[n]
-        # The overall RMS value is the sum of all scaled (by number of data in each respective day of data) squared
-        # daily RMS values divided by the total amount of data, to the power of 1/2.
-        # If the number of samples per day is roughly the same over the time window then the two RMS values should
-        # be approximately equal. If that number varies, so too will the RMS values.
-        RMS = math.sqrt(RMS / sum(Ns))
-        print('Data quality calculation complete for data:')
-        print(data)
+        print('Data quality calculation complete for data from site ' + site_code + ' location code ' +
+              location_code + ' channel code ' + channel_code)
         print('Mean RMS is: ' + str(mean_RMS))
-        print('Reconstituted RMS is: ' + str(RMS))
-        print('Mean completeness is: ' + str(mean_completeness))
-        print('Overall completeness is: ' + str(completeness) + '\n')
 
     # Save results
 
@@ -378,7 +377,4 @@ for m in range(len(site_metadata)):
                       filter_type + ',' +
                       str(minimum_frequency) + ',' +
                       str(maximum_frequency) + ',' +
-                      str(RMS)[:6] + ',' +
-                      str(mean_RMS)[:6] + ',' +
-                      str(completeness)[:6] + ',' +
-                      str(mean_completeness)[:6] + '\n')
+                      str(mean_RMS)[:6] + '\n')
