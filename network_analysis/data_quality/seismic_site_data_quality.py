@@ -9,6 +9,7 @@ Working script for seismic site data quality. Initially, this script will have f
 import datetime
 import math
 import matplotlib.pyplot as plt
+import multiprocessing
 import numpy as np
 from obspy.clients.fdsn import Client
 from obspy.clients.fdsn.header import FDSNNoDataException
@@ -20,8 +21,7 @@ from os import listdir
 from os import remove
 import pandas as pd
 import queue
-import threading
-import time
+
 
 # Import my Python functions
 import sys
@@ -42,8 +42,6 @@ def calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency
     :param endtime: end time of data query, for FDSN completeness calculation, as ISO8601 string
     :return: data RMS value, number of data values
     """
-
-    pst = time.perf_counter()
 
     # Apply a filter to the data
     if filter_type:
@@ -70,7 +68,13 @@ def calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency
     # Also convert the data values out of dB scale as precursor to this.
     # 3) Take sqrt of weighted mean, as data are squared when processed to produce PSD. This gives the RMS value.
     weighted_mean, weight_sum = 0, 0
-    _, mean_psds = ppsd.get_mean()
+
+    try:
+        _, mean_psds = ppsd.get_mean()
+    except Exception:
+        # Fails when no data exists
+        return np.nan, np.nan
+
     psd_widths = [1/ppsd.period_bin_left_edges[n] - 1/ppsd.period_bin_right_edges[n]
                   for n in range(len(ppsd.period_bin_left_edges))]
     psd_centres = [1/ppsd.period_bin_centers[n] for n in range(len(ppsd.period_bin_centers))]
@@ -78,8 +82,6 @@ def calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency
         weighted_mean += math.sqrt(10**(mean_psds[n] / 10) / (psd_centres[n] ** 2)) * psd_widths[n]
         weight_sum += psd_widths[n]
     weighted_mean /= weight_sum
-    pet = time.perf_counter()
-    print('Processing that data took ' + str((pet - pst) / 60.0) + ' minutes.')
 
     return weighted_mean, ppsd
 
@@ -108,118 +110,20 @@ def query_fdsn(station, location, channel, starttime, endtime, client="https://s
     return stream
 
 
-def copy_files(q):
+def data_quality(site_code, location_code, latitude, longitude):
 
     """
-    Copy files to the geonet-data bucket
-    :param q: queue object containing file prefixes
+    Perform data quality calculation. All variables not set in q are considered global and nonvariant.
+    Output is saved to files.
+    :param q: list containing station code and location code to process.
     :return: none
     """
 
-    while True:
-
-        client, bucket, file_key = q.get()
-
-        try:
-            client.download_file('geonet-archive',
-                                 file_key,
-                                 file_key.split('/')[-1])
-            print(file_key + ' downloaded successfully.')
-        except:  # Fails if the file doesn't exist
-            print(file_key + ' failed to be downloaded.')
-            pass
-
-        q.task_done()
-
-
-# Give the path to the site file: a csv containing in each row the station code and location code of each site to use
-# in the data quality calculations. The station codes should be in the first column of this file, and the location
-# code can be in any other column so long as the file header specifies which by the location of the "Location" string
-# in the header.
-site_file = '/home/samto/git/delta/network/sites.csv'
-
-# Give parameters for which data to query
-channel_code = 'HHZ'  # Channel code to query
-starttime = '2019-01-01T00:00:00Z'  # starttime can either be an ISO8601 string, or an integer number of seconds to
-                                    # query data for before the endtime.
-endtime = '2019-01-05T00:00:01Z'  # endtime can be an ISO8601 string or 'now', if 'now' then endtime
-                                  # will be set to the current UTC time. If using S3 data_source, make endtime at least
-                                  # 1 second into the final day of data you want to use.
-
-# Set whether to get data from FDSN (short duration) or S3. If S3 data will be downloaded for all full days between
-# starttime and endtime inclusive.
-data_source = 'S3'
-
-# If you set data_source = 'S3', provide role details for S3 use
-role = 'arn:aws:iam::862640294325:role/tf-sod-team-s3-read-role'
-user = 'arn:aws:iam::582058524534:mfa/samto'
-duration = 43200
-
-# Set how to filter the data, if at all. Use filter_type=None to negate filtering. Filter types are those in obspy.
-filter_type = 'bandpass'
-minimum_frequency = 2
-maximum_frequency = 15
-
-# Parse parameters
-if endtime == 'now':
-    endtime = datetime.datetime.utcnow()
-    if 'T' not in starttime:
-        starttime = endtime - datetime.timedelta(seconds=int(starttime))
-elif endtime != 'now' and 'T' not in starttime:
-    endtime = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%SZ')
-    starttime = endtime - datetime.timedelta(seconds=int(starttime))
-else:
-    endtime = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%SZ')
-    starttime = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%SZ')
-
-# Parse site code metadata from file
-site_metadata = pd.read_csv(site_file, header=0, index_col=0)
-
-# Prepare output file
-with open('seismic_site_data_quality_output.csv', 'w') as outfile:
-    outfile.write('Station,Longitude,Latitude,Starttime,Endtime,Filter,Freqmin,Freqmax,RMS\n')
-
-# Prepare data query variables depending on data_source
-if data_source == 'FDSN':
-    # Determine which FDSN client to use
-    splittime = datetime.datetime.utcnow() - datetime.timedelta(days=7)
-    if splittime <= starttime and splittime <= endtime:
-        # All data is within the nrt-client window
-        client = 'https://service-nrt.geonet.org.nz'
-    elif starttime < splittime and splittime <= endtime:
-        # Query starts before nrt client window, but endtime is in nrt client window
-        client = 'both'
-    elif starttime < splittime and endtime < splittime:
-        # All data is within the archive-client window
-        client = 'https://service.geonet.org.nz'
-
-elif data_source == 'S3':
-    # Prepare the boto3 client to work with S3
-    client = assume_role(role, user, duration)
-
-    # Prepare the workers for parallel processing
-    q = queue.Queue()
-    num_threads = 100
-    for i in range(num_threads):
-        worker = threading.Thread(target=copy_files, args=(q,))
-        worker.setDaemon(True)
-        worker.start()
-
-else:
-    print('data_source needs to be set to either \'FDSN\' or \'S3\' for the script to perform work.')
-    exit()
-
-for m in range(len(site_metadata)):
-    # Get site information
-    site_code = site_metadata.index[m]
-    location_code = site_metadata.iloc[m]['Location']
-
-    # Hardcoded skip of strong motion sites
     try:
         if int(location_code) >= 20:
-            continue
+            return None
     except ValueError:
-        continue
+        return None
 
     print('Downloading data for station ' + site_code + ' location code ' + location_code + '...')
 
@@ -288,29 +192,31 @@ for m in range(len(site_metadata)):
         if len(data) == 0:
             # Save non-results
 
-            with open('seismic_site_data_quality_output.csv', 'a') as outfile:
-                outfile.write(site_code + ',' +
-                              str(site_metadata.iloc[m]['Longitude']) + ',' +
-                              str(site_metadata.iloc[m]['Latitude']) + ',' +
-                              starttime.isoformat() + ',' +
-                              endtime.isoformat() + ',' +
-                              filter_type + ',' +
-                              str(minimum_frequency) + ',' +
-                              str(maximum_frequency) + ',' +
-                              str(np.nan) + ',' +
-                              str(np.nan) + ',' +
-                              str(np.nan) + ',' +
-                              str(np.nan) + '\n')
-            continue
+            outstr = (site_code + ',' +
+                      latitude + ',' +
+                      longitude + ',' +
+                      starttime.isoformat() + ',' +
+                      endtime.isoformat() + ',' +
+                      filter_type + ',' +
+                      str(minimum_frequency) + ',' +
+                      str(maximum_frequency) + ',' +
+                      str(np.nan) + '\n')
+            return outstr
 
     elif data_source == 'S3':
 
+        # Download data
+
         possible_keys = create_miniseed_key_list([site_code], [location_code], [channel_code], starttime, endtime)
-
         for file_key in possible_keys:
-            q.put([client, 'geonet-archive', file_key])
-
-        q.join()
+            try:
+                client.download_file('geonet-archive',
+                                     file_key,
+                                     file_key.split('/')[-1])
+                print(file_key + ' downloaded successfully.')
+            except:  # Fails if the file doesn't exist
+                print(file_key + ' failed to be downloaded.')
+                pass
 
     print('Data download complete. Calculating data quality...')
 
@@ -318,8 +224,7 @@ for m in range(len(site_metadata)):
 
     if data_source == 'FDSN':
 
-        mean_RMS, _ = calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency,
-                                                       starttime, endtime)
+        mean_RMS, _ = calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency, starttime, endtime)
 
     elif data_source == 'S3':
 
@@ -330,35 +235,35 @@ for m in range(len(site_metadata)):
         files = listdir('.')
         RMSs, ppsds = [], []
         for file in files:
-            if file[-1:] == 'D' and site_code in file and location_code in file:
+            if file[-1:] == 'D' and '.' + str(site_code) + '.' in file and '.' + str(location_code) + '-' in file:
                 print('Calculating data quality for file ' + file)
                 data = read(file)
                 daily_RMS, ppsd = calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency,
                                                        starttime, endtime)
+                if np.isnan(daily_RMS):
+                    continue
                 RMSs.append(daily_RMS)
                 # PPSD: need to find a way to compare the noise value returned from this (which is what, a mean?)
                 # to the RMS value determined from timeseries data. May require some digging into literature, but
                 # have timeseries mean value for comparison.
                 ppsds.append(ppsd)
                 remove(file)
+
         if len(RMSs) == 0:
             print('There was no data, moving onto next station.')
+
             # Save non-results
 
-            with open('seismic_site_data_quality_output.csv', 'a') as outfile:
-                outfile.write(site_code + ',' +
-                              str(site_metadata.iloc[m]['Longitude']) + ',' +
-                              str(site_metadata.iloc[m]['Latitude']) + ',' +
-                              starttime.isoformat() + ',' +
-                              endtime.isoformat() + ',' +
-                              filter_type + ',' +
-                              str(minimum_frequency) + ',' +
-                              str(maximum_frequency) + ',' +
-                              str(np.nan) + ',' +
-                              str(np.nan) + ',' +
-                              str(np.nan) + ',' +
-                              str(np.nan) + '\n')
-            continue
+            outstr = (site_code + ',' +
+                      latitude + ',' +
+                      longitude + ',' +
+                      starttime.isoformat() + ',' +
+                      endtime.isoformat() + ',' +
+                      filter_type + ',' +
+                      str(minimum_frequency) + ',' +
+                      str(maximum_frequency) + ',' +
+                      str(np.nan) + '\n')
+            return outstr
 
         # Calculate mean completeness, RMS
         mean_RMS = np.nanmean(RMSs)  # The mean RMS is the mean of daily RMS values
@@ -368,13 +273,117 @@ for m in range(len(site_metadata)):
 
     # Save results
 
-    with open('seismic_site_data_quality_output.csv', 'a') as outfile:
-        outfile.write(site_code + ',' +
-                      str(site_metadata.iloc[m]['Longitude']) + ',' +
-                      str(site_metadata.iloc[m]['Latitude']) + ',' +
-                      starttime.isoformat() + ',' +
-                      endtime.isoformat() + ',' +
-                      filter_type + ',' +
-                      str(minimum_frequency) + ',' +
-                      str(maximum_frequency) + ',' +
-                      str(mean_RMS)[:6] + '\n')
+    outstr=(site_code + ',' +
+            latitude + ',' +
+            longitude + ',' +
+            starttime.isoformat() + ',' +
+            endtime.isoformat() + ',' +
+            filter_type + ',' +
+            str(minimum_frequency) + ',' +
+            str(maximum_frequency) + ',' +
+            str(mean_RMS)[:6] + '\n')
+    return outstr
+
+
+# Give the path to the site file: a csv containing in each row the station code and location code of each site to use
+# in the data quality calculations. The station codes should be in the first column of this file, and the location
+# code can be in any other column so long as the file header specifies which by the location of the "Location" string
+# in the header.
+site_file = '/home/samto/git/delta/network/sites.csv'
+
+# Give parameters for which data to query
+channel_code = 'HHZ'  # Channel code to query
+starttime = '2019-01-01T00:00:00Z'  # starttime can either be an ISO8601 string, or an integer number of seconds to
+                                    # query data for before the endtime.
+endtime = '2019-01-10T00:00:01Z'  # endtime can be an ISO8601 string or 'now', if 'now' then endtime
+                                  # will be set to the current UTC time. If using S3 data_source, make endtime at least
+                                  # 1 second into the final day of data you want to use.
+
+# Set whether to get data from FDSN (short duration) or S3. If S3 data will be downloaded for all full days between
+# starttime and endtime inclusive.
+data_source = 'S3'
+
+# If you set data_source = 'S3', provide role details for S3 use
+role = 'arn:aws:iam::862640294325:role/tf-sod-team-s3-read-role'
+user = 'arn:aws:iam::582058524534:mfa/samto'
+duration = 43200
+
+# Set how to filter the data, if at all. Use filter_type=None to negate filtering. Filter types are those in obspy.
+filter_type = 'bandpass'
+minimum_frequency = 2
+maximum_frequency = 15
+
+# Parse parameters
+if endtime == 'now':
+    endtime = datetime.datetime.utcnow()
+    if 'T' not in starttime:
+        starttime = endtime - datetime.timedelta(seconds=int(starttime))
+elif endtime != 'now' and 'T' not in starttime:
+    endtime = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%SZ')
+    starttime = endtime - datetime.timedelta(seconds=int(starttime))
+else:
+    endtime = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%SZ')
+    starttime = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%SZ')
+
+# Parse site code metadata from file
+site_metadata = pd.read_csv(site_file, header=0, index_col=0)
+
+# Prepare output file
+with open('seismic_site_data_quality_output.csv', 'w') as outfile:
+    outfile.write('Station,Longitude,Latitude,Starttime,Endtime,Filter,Freqmin,Freqmax,RMS\n')
+
+# Prepare data query variables depending on data_source
+if data_source == 'FDSN':
+    # Determine which FDSN client to use
+    splittime = datetime.datetime.utcnow() - datetime.timedelta(days=7)
+    if splittime <= starttime and splittime <= endtime:
+        # All data is within the nrt-client window
+        client = 'https://service-nrt.geonet.org.nz'
+    elif starttime < splittime and splittime <= endtime:
+        # Query starts before nrt client window, but endtime is in nrt client window
+        client = 'both'
+    elif starttime < splittime and endtime < splittime:
+        # All data is within the archive-client window
+        client = 'https://service.geonet.org.nz'
+
+elif data_source == 'S3':
+    # Prepare the boto3 client to work with S3
+    client = assume_role(role, user, duration)
+
+else:
+    print('data_source needs to be set to either \'FDSN\' or \'S3\' for the script to perform work.')
+    exit()
+
+# Pump parameters into parallel processing pool and do data quality calculation
+
+# Prepare the workers for parallel processing
+pp_pool = multiprocessing.Pool()
+
+jobs = []
+for m in range(len(site_metadata)):
+
+    # Get site information
+    site_code = site_metadata.index[m]
+    location_code = site_metadata.iloc[m]['Location']
+    latitude = str(site_metadata.iloc[m]['Longitude'])
+    longitude = str(site_metadata.iloc[m]['Latitude'])
+
+    # Send jobs to the pool of workers
+    job = pp_pool.apply_async(data_quality, (site_code, location_code, latitude, longitude))
+    jobs.append(job)
+
+# Collect results from the workers through the pool result queue
+with open('seismic_site_data_quality_output.csv', 'w') as outfile:
+    # ^ IMPORTANT: have to use 'w' when working with parallel processes even though 'a' behaviour is desired!
+    for job in jobs:
+        result = job.get()
+        try:
+            outfile.write(result)
+        except TypeError:
+            # Fails on result=None, as desired.
+            pass
+
+# Close pool and join workers
+
+pp_pool.close()
+pp_pool.join()
