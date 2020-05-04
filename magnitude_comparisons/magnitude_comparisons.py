@@ -3,7 +3,6 @@ Compare earthquake magnitudes within or between their representations in earthqu
 """
 
 import datetime
-import earthquake_location
 import glob
 from io import BytesIO
 import math
@@ -16,13 +15,18 @@ from scipy.stats import gmean
 from scipy.odr import Model, Data, ODR
 import time
 
+# Import my Python functions
+import sys
+sys.path.append('/home/samto/git/staylorofford/duty_tools/earthquake-location/')
+print(sys.path)
+import earthquake_location
 
 quakeml_reader = Unpickler()
 
 
-def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude, catalog_name,
-                    comparison_magnitudes, starttime='0000-01-01T00:00:00Z', endtime='9999-01-01T00:00:00Z',
-                    maxmagnitude=10):
+def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude, catalog_name,
+                comparison_magnitudes, starttime='0000-01-01T00:00:00Z', endtime='9999-01-01T00:00:00Z',
+                maxmagnitude=10):
 
     """
     Use obspy with pycurl to query event details from the ISC.
@@ -40,8 +44,9 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
     :return:
     """
 
-    # Curl ISC response and parse quakeml bytes string through obspy
-    # using an interative query approach when a single query fails
+    # Adjust parameter format if required
+    if "usgs" in service:
+        maxlongitude += 360
 
     factor = 1
     success = False
@@ -66,28 +71,50 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
             while not query_pass:
 
                 # Build query
-                query = ""
-                query = query.join(('http://www.isc.ac.uk/cgi-bin/web-db-v4?'
-                                    'out_format=CATQuakeML&request=COMPREHENSIVE&searchshape=RECT',
-                                    '&bot_lat=', str(minlatitude),
-                                    '&top_lat=', str(maxlatitude),
-                                    '&left_lon=', str(minlongitude),
-                                    '&right_lon=', str(maxlongitude),
-                                    '&min_mag=', str(minmagnitude),
-                                    '&start_year=', str(time_ranges[i - 1].year),
-                                    '&start_month=', str(time_ranges[i - 1].month),
-                                    '&start_day=', str(time_ranges[i - 1].day),
-                                    '&start_time=', str(time_ranges[i - 1].isoformat())[:19].split('T')[1][:-1],
-                                    '&end_year=', str(time_ranges[i].year),
-                                    '&end_month=', str(time_ranges[i].month),
-                                    '&end_day=', str(time_ranges[i].day),
-                                    '&end_time=', str(time_ranges[i].isoformat())[:19].split('T')[1][:-1],
-                                    '&max_mag=', str(maxmagnitude),
-                                    '&req_mag_type=Any'))
+                if 'isc' in service:
+                    query = ""
+                    query = query.join(('http://www.isc.ac.uk/cgi-bin/web-db-v4?'
+                                        'out_format=CATQuakeML&request=COMPREHENSIVE&searchshape=RECT',
+                                        '&bot_lat=', str(minlatitude),
+                                        '&top_lat=', str(maxlatitude),
+                                        '&left_lon=', str(minlongitude),
+                                        '&right_lon=', str(maxlongitude),
+                                        '&min_mag=', str(minmagnitude),
+                                        '&start_year=', str(time_ranges[i - 1].year),
+                                        '&start_month=', str(time_ranges[i - 1].month),
+                                        '&start_day=', str(time_ranges[i - 1].day),
+                                        '&start_time=', str(time_ranges[i - 1].isoformat())[:19].split('T')[1][:-1],
+                                        '&end_year=', str(time_ranges[i].year),
+                                        '&end_month=', str(time_ranges[i].month),
+                                        '&end_day=', str(time_ranges[i].day),
+                                        '&end_time=', str(time_ranges[i].isoformat())[:19].split('T')[1][:-1],
+                                        '&max_mag=', str(maxmagnitude),
+                                        '&req_mag_type=Any'))
+                else:
+                    # Build query
+                    query = ""
+                    query = query.join((service,
+                                        "query?",
+                                        "minmagnitude=",
+                                        str(minmagnitude),
+                                        "&maxmagnitude=",
+                                        str(maxmagnitude),
+                                        "&minlatitude=",
+                                        str(minlatitude),
+                                        "&maxlatitude=",
+                                        str(maxlatitude),
+                                        "&minlongitude=",
+                                        str(minlongitude),
+                                        "&maxlongitude=",
+                                        str(maxlongitude),
+                                        "&starttime=",
+                                        time_ranges[i - 1].isoformat(),
+                                        "&endtime=",
+                                        time_ranges[i].isoformat()))
 
                 try:
 
-                    print('\nAttempting ISC catalog query for events between ' + str(time_ranges[i - 1]) +
+                    print('\nAttempting catalog query for events between ' + str(time_ranges[i - 1]) +
                           ' and ' + str(time_ranges[i]))
 
                     queryresult = curl(query)
@@ -95,6 +122,12 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                         # Wait a minute, then try again with the same query
                         print('Got \"Sorry, but your request cannot be processed at the present time.\" message. Waiting '
                               'one minute and trying again.')
+                        print('Error time: ' + str(datetime.datetime.now()))
+                        time.sleep(60)
+                        continue
+                    elif "Please try again in about 30 seconds." in queryresult.decode('ascii'):
+                        # Wait a minute, then try again with the same query
+                        print('Got \"Please try again in about 30 seconds.\" Will try again in one minute.')
                         print('Error time: ' + str(datetime.datetime.now()))
                         time.sleep(60)
                         continue
@@ -122,9 +155,10 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
                         factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
                         break
 
-            # Save queryresult to file
-            with open('catalog_data.txt', 'a') as outfile:
-                outfile.write(queryresult.decode('utf-8'))
+            if query_pass is True:
+                # Save queryresult to file
+                with open('catalog_data.txt', 'a') as outfile:
+                    outfile.write(queryresult.decode('utf-8'))
 
         if successes == len(time_ranges) - 1:
             success = True
@@ -134,172 +168,20 @@ def ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxla
     with open('catalog_data.txt', 'r') as infile:
         numentries = 0
         for row in infile:
-            if '<?xml version="1.0" encoding="UTF-8"?>' in row and numentries == 0:
-                # Catches the start of the first entry
-                numentries += 1
-                entry = ''
-            elif '<?xml version="1.0" encoding="UTF-8"?>' in row and numentries > 0:
-                # Catches when a new entry occurs
-                if entry.encode('utf-8') == b'\n<quakeml xmlns="http://quakeml.org/xmlns/quakeml/1.2">No ' \
-                                            b'events were found.\n':
-                    # Catch when the current entry has no data
-                    entry = ''
-                else:
-                    catalog = quakeml_reader.loads(entry.encode('utf-8'))
-                    events = catalog.events
-                    print('\nCurrent catalog has ' + str(len(events)) + ' events')
-
-                    # Append new magnitude data to files
-                    save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
-                    entry = ''
-            else:
-                entry += row
-        else:
-            # Catch when the file ends
-            if entry.encode('utf-8') != b'\n<quakeml xmlns="http://quakeml.org/xmlns/quakeml/1.2">No ' \
-                                        b'events were found.\n':
-                catalog = quakeml_reader.loads(entry.encode('utf-8'))
-                events = catalog.events
-                print('\nCurrent catalog has ' + str(len(events)) + ' events')
-
-                # Append new magnitude data to files
-                save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
-
-    os.remove('catalog_data.txt')
-    return events
-
-
-def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
-                     minlatitude, maxlatitude, catalog_name, comparison_magnitudes,
-                     starttime='0000-01-01T00:00:00Z', endtime='9999-01-01T00:00:00Z', maxmagnitude=10):
-  
-    """
-    Use obspy with pycurl to query event catalogs from FDSN members.
-    Uses a file to save query results to to avoid crashing the computer due to memory filling.
-    :param service:
-    :param minmagnitude:
-    :param maxmagnitude:
-    :param minlongitude:
-    :param maxlongitude:
-    :param minlatitude:
-    :param maxlatitude:
-    :param starttime:
-    :param endtime:
-    :param catalog_name:
-    :param comparison_magnitudes:
-    :return:
-    """
-
-    # Adjust format if required
-    if "usgs" in service:
-        maxlongitude += 360
-
-    # Curl FDSN response and parse quakeml bytes string through obspy
-    # using an interative query approach when a single query fails
-
-    factor = 1
-    success = False
-    while not success:
-
-        with open('catalog_data.txt', 'w') as outfile:
-            pass
-
-        successes = 0
-
-        # Build time ranges for query
-        starttime_dt = datetime.datetime.strptime(starttime, '%Y-%m-%dT%H:%M:%SZ')
-        endtime_dt = datetime.datetime.strptime(endtime, '%Y-%m-%dT%H:%M:%SZ')
-        time_ranges = [starttime_dt]
-        for i in range(1, factor + 1):
-            time_ranges.append(time_ranges[-1] +
-                               datetime.timedelta(seconds=(endtime_dt - starttime_dt).total_seconds() / factor))
-        # Run queries
-        for i in range(1, len(time_ranges)):
-            query_pass = False
-            while not query_pass:
-
-                # Build query
-                query = ""
-                query = query.join((service,
-                                    "query?",
-                                    "minmagnitude=",
-                                    str(minmagnitude),
-                                    "&maxmagnitude=",
-                                    str(maxmagnitude),
-                                    "&minlatitude=",
-                                    str(minlatitude),
-                                    "&maxlatitude=",
-                                    str(maxlatitude),
-                                    "&minlongitude=",
-                                    str(minlongitude),
-                                    "&maxlongitude=",
-                                    str(maxlongitude),
-                                    "&starttime=",
-                                    time_ranges[i - 1].isoformat(),
-                                    "&endtime=",
-                                    time_ranges[i].isoformat()))
-
-                try:
-
-                    print('\nAttempting FDSN catalog query for events between ' + str(time_ranges[i - 1]) +
-                          ' and ' + str(time_ranges[i]))
-
-                    queryresult = curl(query)
-                    if "Please try again in about 30 seconds." in queryresult.decode('ascii'):
-                        # Wait a minute, then try again with the same query
-                        print('Got \"Please try again in about 30 seconds.\" Will try again in one minute.')
-                        print('Error time: ' + str(datetime.datetime.now()))
-                        time.sleep(60)
-                        continue
-
-                    catalog = quakeml_reader.loads(queryresult)
-                    events = catalog.events
-                    print('Query produced ' + str(len(events)) + ' events')
-                    successes += 1
-                    query_pass = True
-
-                except:
-                    print('Failed! Query result is:')
-                    try:
-                        print(queryresult)
-                    except:
-                        print('No query result!')
-                    print('Error time: ' + str(datetime.datetime.now()))
-                    if successes > 0:
-                        print('Assuming query failed because no events exist at high magnitude range')
-                        successes += 1
-                        query_pass = True
-                    else:
-                        factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
-                        break
-
-            # Save queryresult to file
-            with open('catalog_data.txt', 'a') as outfile:
-                outfile.write(queryresult.decode('utf-8'))
-
-        if successes == len(time_ranges) - 1:
-            success = True
-
-    # Load all data from file
-    print('Loading catalog data from file...')
-    with open('catalog_data.txt', 'r') as infile:
-        numentries = 0
-        rc = -1
-        for row in infile:
-            rc += 1
             row = row.strip()  # Remove leading and trailing whitespaces
             if '<?xml version="1.0" encoding="UTF-8"?>' in row and numentries == 0:
                 # Catches the start of the first entry
                 numentries += 1
                 entry = ''
             elif '<?xml version="1.0" encoding="UTF-8"?>' in row and numentries > 0:
-                if row[-len('<?xml version="1.0" encoding="UTF-8"?>'):] == '<?xml version="1.0" encoding="UTF-8"?>' and \
-                        row != '<?xml version="1.0" encoding="UTF-8"?>':
-                    # If the XML declaration is at the end of a row containing other data
+
+                # If the XML declaration is at the end of a row containing other data, remove it
+                if row[-len('<?xml version="1.0" encoding="UTF-8"?>'):] == '<?xml version="1.0" encoding="UTF-8"?>' or \
+                        row == '<?xml version="1.0" encoding="UTF-8"?>':
                     row = row[:-len('<?xml version="1.0" encoding="UTF-8"?>')]
+
                 # Catches when a new entry occurs
-                if entry.encode('utf-8') == b'\n<quakeml xmlns="http://quakeml.org/xmlns/quakeml/1.2">No ' \
-                                            b'events were found.\n':
+                if entry == '<quakeml xmlns="http://quakeml.org/xmlns/quakeml/1.2">No events were found.':
                     # Catch when the current entry has no data
                     entry = ''
                 else:
@@ -316,11 +198,11 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                     save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
                     entry = ''
             else:
+                # Otherwise continue to extend the current entry
                 entry += row
         else:
             # Catch when the file ends
-            if entry.encode('utf-8') != b'\n<quakeml xmlns="http://quakeml.org/xmlns/quakeml/1.2">No ' \
-                                        b'events were found.\n':
+            if entry != '<quakeml xmlns="http://quakeml.org/xmlns/quakeml/1.2">No events were found.':
                 catalog = quakeml_reader.loads(entry.encode('utf-8'))
                 events = catalog.events
                 print('Current catalog has ' + str(len(events)) + ' events')
@@ -329,7 +211,6 @@ def FDSN_event_query(service, minmagnitude, minlongitude, maxlongitude,
                 save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
 
     os.remove('catalog_data.txt')
-    return events
 
 
 def curl(curlstr):
@@ -408,6 +289,7 @@ def save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes):
                         datalist[7][i].append(event.event_descriptions[0].text)
                     except:
                         datalist[7][i].append('nan')
+                    break  # Do not duplicate records. Assume the first magnitude of the type desired is accurate.
 
         if len(datalist[0][i]) == 0:
             print('No magnitudes of type ' + comparison_magnitudes[i] + ' were found in the catalog.')
@@ -524,7 +406,7 @@ def parse_data(filelist, split_str, starttime, endtime):
 
 
 def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
-                     rms_threshold, mw_merging, show_matching):
+                     rms_threshold, show_matching):
 
     """
     Match events between two catalogs and save all events and their matched magnitudes to file
@@ -537,7 +419,6 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
     :param max_dist: maximum distance (absolute) between events for them to be matched
     :param rms_threshold: origin time difference at which events from different catalogs are considered to
            represent the same earthquake
-    :param mw_merging: whether to merge Mw values across all catalogs into a singular Mw
     :param show_matching: whether to plot relative distance and time of all events that have matched
     :return: saves matched events with matched magnitudes to a csv file
     """
@@ -554,10 +435,18 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
     # Generate list of events for output csv (rows) from reference catalog events
     event_list = []
     for n in range(len(magnitude_timeseries[0])):
-        for m in range(len(magnitude_timeseries[0][n])):
+        for k in range(len(magnitude_timeseries[0][n])):
             # Only populate the event list with the non-reference catalog
             if timeseries_types[n].split('_')[0] in catalog_names[0]:
-                event_list.append(magnitude_timeseries[0][n][m])
+                # Extract the eventID if it is in a complicated string
+                if 'id=' in magnitude_timeseries[0][n][k]:
+                    eventid = magnitude_timeseries[0][n][k].split('id=')[1]
+                    if '&format=quakeml' in magnitude_timeseries[0][n][k]:
+                        eventid = eventid.split('&format=quakeml')[0]
+                    magnitude_timeseries[0][n][k] = eventid
+                else:
+                    magnitude_timeseries[0][n][k] = magnitude_timeseries[0][n][k].split('/')[-1]
+                event_list.append(magnitude_timeseries[0][n][k])
     event_list = list(set(event_list))
 
     # Pre-populated eventID, location, and RMS error in datalist prior to matching (from reference catalog data)
@@ -581,6 +470,9 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
     matched_temporal_lengths = []
     matched_spatial_lengths = []
     for n in range(len(timeseries_types)):
+        if timeseries_types[n].split('_')[0] != catalog_names[0].split('_')[0]:
+            # Always use reference catalog magnitude types for matching
+            continue
         for m in range(len(timeseries_types)):
             if str(m) + ',' + str(n) in complete_pairs:
                 # Don't repeat matching
@@ -598,10 +490,10 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                 # We have another of our first sets of comparison magnitudes:
                 # This will do the internal matching routine.
                 # Find matches and load data into datalist
-                # Go through all the entires for the nth magnitude type
+                # Go through all the entries for the nth magnitude type
                 for k in range(len(magnitude_timeseries[0][n])):
                     event_index = event_list.index(magnitude_timeseries[0][n][k])
-                    # Go through all the entires for the mth magnitude type
+                    # Go through all the entries for the mth magnitude type
                     for l in range(len(magnitude_timeseries[0][m])):
                         # Match based on eventID
                         if magnitude_timeseries[0][n][k] == magnitude_timeseries[0][m][l]:
@@ -688,7 +580,7 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
 
                         # Make the event file to use in the earthquake location
                         event_file = open('temporary_event_file', 'w')
-                        event_file.write('eventID\n' + str(magnitude_timeseries[0][n][k].split('/')[-1]) + '\n')
+                        event_file.write('eventID\n' + str(magnitude_timeseries[0][n][k]) + '\n')
                         event_file.close()
 
                         # Begin the search with the event match with smallest length and end when a match is found
@@ -715,7 +607,9 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                             arrival_time_data, arrival_time_data_header, grid_points, grid_header, test_origins = \
                                 earthquake_location.parse_files(eventid_file='temporary_event_file',
                                                                 test_origins='temporary_test_origins',
-                                                                mode='spherical')
+                                                                mode='spherical',
+                                                                event_service=services[0],
+                                                                station_service=services[0].replace('event', 'station'))
 
                             # Check arrival time data is non-empty, and if it is, ensure arrival is ignored
                             if len(arrival_time_data) == 1 and len(arrival_time_data[0]) == 0:
@@ -785,47 +679,158 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
             outfile.write(outstr[:-1] + '\n')
 
 
-def do_plotting(datalist, m, n, data_types, description=None):
+def f(P, x):
 
-    # Build plotting dataset
+    """
+    Point on line function to use in orthogonal regression
+    :param P: m, c values for line
+    :param x: dataset values
+    :return point on line values for x value in x
+    """
+
+    return P[0] * x + P[1]
+
+
+def orthregress(x, y):
+
+    """
+    Perform an orthogonal distance regression,
+    :param x: dataset 1 values
+    :param y: dataset 2 values
+    :return: gradient, intercept of orthogonal distance regression and their standard error
+    """
+
+    # Run orthogonal regression
+
+    model = Model(f)
+    data = Data(x, y)
+    odr = ODR(data, model, beta0=[1, 1])
+    output = odr.run()
+    m, c = output.beta
+    m_err, c_err = output.sd_beta
+
+    return m, c, m_err, c_err
+
+
+def do_plotting(datalist, m, n, data_types, description=None, regression_pairs=None, regression_limits=None):
+
+    # Bin the y data to the corresponding x data and calcuate the data distribution and number of points in each bin
     plt.figure()
     x, xdec = [], []
-    y = []
+    y, ydec = [], []
     for k in range(len(datalist[0])):
         if datalist[n][k][:3] != 'nan' and datalist[m][k][:3] != 'nan':
             x.append(float(datalist[m][k]))
             xdec.append(round(float(datalist[m][k]), 1))
             y.append(float(datalist[n][k]))
+            ydec.append(round(float(datalist[m][k]), 1))
 
-    # Plot the data
-    plt.scatter(x, y, s=1)
-
-    # Bin the y data to the corresponding x data and plot the mean value in each bin with size propotional
-    # to number of data in the bin.
     x_vals = list(set(xdec))
+    y_vals = list(set(ydec))
+    binned_y = [[] for l in range(len(x_vals))]
+    binned_ydec = [[] for l in range(len(x_vals))]
     binned_yvals = [[] for l in range(len(x_vals))]
+    binned_ycounts = [[] for l in range(len(x_vals))]
+    bin_means = [0] * len(x_vals)
     for l in range(len(xdec)):
         x_idx = x_vals.index(xdec[l])
-        binned_yvals[x_idx].append(y[l])
-    mean_yvals = [0] * len(binned_yvals)
-    n_yvals = [0] * len(binned_yvals)
-    for l in range(len(binned_yvals)):
-        mean_yvals[l] = gmean(binned_yvals[l])
-        n_yvals[l] = len(binned_yvals[l])
-    n_tot = sum(n_yvals)
-    plt.scatter(x_vals, mean_yvals, s=n_yvals, edgecolors='k', linewidths=1)
+        binned_y[x_idx].append(y[l])
+        binned_ydec[x_idx].append(round(y[l], 1))
+    for l in range(len(x_vals)):
+        binned_yvals[l] = list(set(binned_ydec[l]))
+        for k in range(len(binned_yvals[l])):
+            binned_ycounts[l].append(binned_ydec[l].count(binned_yvals[l][k]))
+        bin_means[l] = gmean(binned_y[l])
+    n_tot = len(y)
+
+    # Scale normalise y count values for plotting
+    maxcount = 1
+    for l in range(len(binned_ycounts)):
+        for k in range(len(binned_ycounts[l])):
+            if binned_ycounts[l][k] > maxcount:
+                maxcount = binned_ycounts[l][k]
+    for l in range(len(binned_ycounts)):
+        for k in range(len(binned_ycounts[l])):
+            binned_ycounts[l][k] /= maxcount
+
+    # Plot data
+    cm = plt.cm.get_cmap('RdYlBu_r')
+    for l in range(len(x_vals)):
+        colors = []
+        for k in range(len(binned_ycounts[l])):
+            colors.append(cm(binned_ycounts[l][k]))
+        plt.scatter([x_vals[l]] * len(binned_yvals[l]), binned_yvals[l], c=colors, s=10, cmap=cm)
+        if 1 in binned_ycounts[l]:
+            plt.set_cmap('RdYlBu_r')
+            cb = plt.colorbar()
+            cb.set_ticks(cb.get_ticks())
+            cb.set_ticklabels(ticklabels=[int(round(tickvalue * maxcount)) for tickvalue in cb.get_ticks()],
+                              update_ticks=True)
+            cb.set_label('data count', labelpad=15, rotation=270)
+
+    # Plot data means
+    plt.scatter(x_vals, bin_means, s=20, ec='black', fc='None', lw=1)
 
     # Plot a line showing the 1:1 magnitude relationship for reference
+    plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=1, alpha=0.8)
 
-    plt.plot(range(11), range(11), color='k', linestyle='--', linewidth=0.5, alpha=0.5)
+    # Plot each data's distribution along the axes
+    x_distro = [0] * len(x_vals)
+    y_distro = [0] * len(y_vals)
+    for idx, x_val in enumerate(x_vals):
+        x_distro[idx] = xdec.count(x_val)
+    for idx, y_val in enumerate(y_vals):
+        y_distro[idx] = ydec.count(y_val)
+
+    plt.xlim(2, 9)
+    plt.ylim(2, 9)
+
+    if len(x_distro) > 0:
+        max_xdistro = max(x_distro)
+        for idx in range(len(x_distro)):
+            x_distro[idx] = x_distro[idx] / max_xdistro + 2
+        x_vals, x_distro = zip(*sorted(zip(x_vals, x_distro)))
+        plt.plot(x_vals, x_distro, color='k', linewidth=1)
+
+    if len(y_distro) > 0:
+        max_ydistro = max(y_distro)
+        for idx in range(len(y_distro)):
+            y_distro[idx] = y_distro[idx] / max_ydistro + 2
+        y_vals, y_distro = zip(*sorted(zip(y_vals, y_distro)))
+        plt.plot(y_distro, y_vals, color='k', linewidth=1)
+
+    if [data_types[n], data_types[m]] in regression_pairs:
+        # Limit the data to those in the regression interval
+        pair_idx = regression_pairs.index([data_types[n], data_types[m]])
+        x_inrange = []
+        y_inrange = []
+        for idx, xval in enumerate(x):
+            if regression_limits[pair_idx][0] <= xval <= regression_limits[pair_idx][1]:
+                x_inrange.append(xval)
+                y_inrange.append(y[idx])
+        x, y = x_inrange, y_inrange
+
+        # Calculate orthogonal regression line
+        slope, intercept, slope_err, intercept_err = orthregress(x, y)
+
+        # Use 3 standard errors to capture the variability of the sample means over the line regression interval
+        x.sort()
+        y1 = [((slope - 3 * slope_err) * x_val + (intercept + 3 * intercept_err)) for x_val in x]
+        y2 = [((slope + 3 * slope_err) * x_val + (intercept - 3 * intercept_err)) for x_val in x]
+        plt.fill_between(x, y1, y2, fc='k', ec='None', alpha=0.1)
+        plt.plot(x, [(slope * x_val + intercept) for x_val in x], color='k', linewidth=1, alpha=0.8)
+        print('Regression pair is ' + data_types[n] + ', ' + data_types[m])
+        print('Regression interval is ' + str(regression_limits[pair_idx][0]) +
+              '-' + str(regression_limits[pair_idx][1]))
+        print('m=' + str(slope) +
+              '\nc=' + str(intercept) +
+              '\nm_stderr=' + str(slope_err) +
+              '\nc_stderr=' + str(intercept_err))
 
     # Add plot features for clarity
-
     plt.xlabel(data_types[m])
     plt.ylabel(data_types[n])
     plt.grid(which='major', axis='both', linestyle='-', alpha=0.5)
-    plt.xlim(2, 9)
-    plt.ylim(2, 9)
     plt.gca().set_aspect('equal', adjustable='box')
     if description is None:
         plt.title('N=' + str(n_tot))
@@ -842,10 +847,10 @@ def do_plotting(datalist, m, n, data_types, description=None):
 
 # Set data gathering parameters
 
-minmagnitude = 3  # minimum event magnitude to get from catalog
+minmagnitude = 6  # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -90, 90  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 0, -0.001  # western and eastern longitude for event search window
-starttime = '2012-01-01T00:00:00Z'  # event query starttime
+starttime = '1800-01-01T00:00:00Z'  # event query starttime
 endtime = '2021-01-01T00:00:00Z' #'2020-03-01T00:00:00'  # event query endtime, 'now' will set it to the current time
 
 if endtime == 'now':
@@ -855,12 +860,12 @@ if endtime == 'now':
 # query will be used instead of the FDSN catalog query.
 
 catalog_names = ['GeoNet_catalog', 'USGS_catalog']
-# catalog_names = ['GeoNet_catalog', 'GeoNet_catalog']
-# services = ["https://service.geonet.org.nz/fdsnws/event/1/"]
-services = ["https://service.geonet.org.nz/fdsnws/event/1/", "https://earthquake.usgs.gov/fdsnws/event/1/"] # "https://service.geonet.org.nz/fdsnws/event/1/"]
+# catalog_names = ['ISC_catalog']
+# catalog_names = ['USGS_catalog', 'ISC_catalog']
+services = ["https://service.geonet.org.nz/fdsnws/event/1/", "https://earthquake.usgs.gov/fdsnws/event/1/"]
+# services = ['isc']
+# services = ['https://earthquake.usgs.gov/fdsnws/event/1/', 'isc']
 
-# catalog_names = ['ISC_catalog', 'ISC_catalog']
-# services = [None, None]  # If 'ISC_catalog' is given as an entry above, the corresponding services entry can be anything
 catalogs = [[] for i in range(len(catalog_names))]
 
 # Define comparison magnitudes: first nested list is from GeoNet catalog, second if from USGS
@@ -870,9 +875,13 @@ catalogs = [[] for i in range(len(catalog_names))]
 # If you want to compare magnitudes across a single catalog,
 # you will need to repeat its details as both the comparison and reference catalogs.
 
-comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
-# comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['Mw']]
-# comparison_magnitudes = [['mB', 'mb'], ['MW']]
+# comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
+comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['Mw']]
+# comparison_magnitudes = [['mww'], ['mb', 'mB', 'MS', 'MW']]
+
+# Set which magnitude type pairs to do orthogonal regression for
+regression_pairs = [['mB', 'unified_Mw'], ['MLv', 'unified_Mw']]
+regression_limits = [[5.3, 9], [3, 9]]
 
 # Set matching parameters
 
@@ -885,9 +894,9 @@ rms_threshold = 5  # origin time potential matches must be within (in seconds) w
 # Set what level of processing you want the script to do
 build_magnitude_timeseries = False  # Should the script build the magnitude timeseries, or they exist already?
 build_GeoNet_Mw_timeseries = False  # Should the script build a magnitude timeseries for the GeoNet Mw catalog?
-gb_plotting = False  # Should the script produce Gutenburg-Richter style plots?
+gb_plotting = True  # Should the script produce Gutenburg-Richter style plots?
 matching = False  # Should the script match events within and between catalogs?
-mw_merging = True  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
+mw_merging = False  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
 show_matching = False  # Should the script show the operator those events in the match window if matching is performed?
 
 # Build event catalogs from FDSN
@@ -904,20 +913,10 @@ if build_magnitude_timeseries:
           str(minlongitude) + ' and ' + str(maxlongitude) + ' degrees longitude after ' + str(starttime)+
           ' and before ' + str(endtime))
 
-    ISC_catalog_idx = None
     for n in range(len(catalogs)):
 
-        if catalog_names[n] == 'ISC_catalog':
-            if ISC_catalog_idx is None:
-                catalogs[n] = ISC_event_query(minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude,
-                                              catalog_names[n], comparison_magnitudes[n], starttime, endtime)
-                ISC_catalog_idx = n
-            else:
-                catalogs[n] = catalogs[ISC_catalog_idx]
-        else:
-            catalogs[n] = FDSN_event_query(services[n], minmagnitude, minlongitude, maxlongitude,
-                                           minlatitude, maxlatitude, catalog_names[n],
-                                           comparison_magnitudes[n], starttime, endtime)
+        event_query(services[n], minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude,
+                    catalog_names[n], comparison_magnitudes[n], starttime, endtime)
 
 # Build GeoNet Mw catalog
 
@@ -974,7 +973,7 @@ if matching:
     print("Matching events within temporal and spatial distance limits and with the desired magnitude types")
 
     match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comparison_magnitudes, max_dt, max_dist,
-                     rms_threshold, mw_merging, show_matching)
+                     rms_threshold, show_matching)
 
 # Load magnitude match data
 
@@ -1025,13 +1024,11 @@ with open('./magnitude_matches_all.csv', 'r') as openfile:
         data_types = re_columns
         for idx, column in enumerate(data_types):
             if column.lower()[:2] == 'mw' and 'mB' not in column:
-                data_types[idx] = 'unified_Mw'  # Ensure data titles reflect processing
+                data_types[idx] = 'unified_Mw'
         datalist = re_datalist
 
 print('Saving plots...')
-
 # Magnitude value plotting
-
 complete_pairs = []
 for n in range(7, len(data_types)):
 
@@ -1066,16 +1063,13 @@ for n in range(7, len(data_types)):
     if data_types[n] not in comparison_magnitudes[0]:
         continue
     for m in range(7, len(data_types)):
-        # Ensure comparison magnitudes are only ever on the x-axis
-        if data_types[m] not in comparison_magnitudes[1] and mw_merging is False:
-            continue
 
         # Don't repeat plotting
         if n == m or str(m) + ',' + str(n) in complete_pairs:
             continue
 
         # First do plotting for all data
-        do_plotting(datalist, m, n, data_types)
+        do_plotting(datalist, m, n, data_types, regression_pairs=regression_pairs, regression_limits=regression_limits)
 
         # Then do plotting for each subregion
         descriptions = []
@@ -1090,6 +1084,7 @@ for n in range(7, len(data_types)):
                 if datalist[descriptions_idx][k] == description:
                     for l in range(len(datalist)):
                         subdatalist[l].append(datalist[l][k])
-            do_plotting(subdatalist, m, n, data_types, description=description)
+            if len(subdatalist[0]) > 1:
+                do_plotting(subdatalist, m, n, data_types, description=description)
 
         complete_pairs.append(str(n) + ',' + str(m))
