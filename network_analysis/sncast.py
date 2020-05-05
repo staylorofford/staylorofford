@@ -37,7 +37,7 @@ import pandas as pd
 
 
 def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.1,
-          dlat=0.1, stat_num=10, snr=10, foc_depth=0, region='CAL', mag_min=2.0, mag_delta=0.1):
+          dlat=0.1, stat_num=10, snr=10, foc_depth=5, region='CAL', mag_min=2.0, mag_delta=0.1):
 
     """
     This routine calculates the geographic distribution of the minimum 
@@ -83,11 +83,12 @@ def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.
         c = -2.09
 
     # read in data, file format: "LON, LAT, NOISE [nm], STATION"
-    array_in = np.genfromtxt('%s/%s.dat' % (dir_in, filename), dtype=None, delimiter=",")
+    array_in = np.genfromtxt('%s/%s.dat' % (dir_in, filename), dtype=None, delimiter=",", filling_values=0)
     lon = ([t[0] for t in array_in])
     lat = [t[1] for t in array_in]
     noise = [t[2] for t in array_in]
     stat = [t[3] for t in array_in]
+    corr = [t[4] for t in array_in]
     # grid size
     nx = int((lon1 - lon0) / dlon) + 1
     ny = int((lat1 - lat0) / dlat) + 1
@@ -115,7 +116,8 @@ def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.
                 m = mag_min - mag_delta
                 while ampl < snr * noise[j]:
                     m = m + mag_delta
-                    ampl = pow(10, (m - a * log10(hypo_dist) - b * hypo_dist - c))
+                    #ampl = pow(10, (m - a * log10(hypo_dist) - b * hypo_dist - c ))
+                    ampl = pow(10, (m - a * log10(hypo_dist) - b * hypo_dist - c - corr[j]))
                 mag.append(m)
                 j = j + 1   
             # Sort magnitudes in ascending order
@@ -146,7 +148,7 @@ def PlotminML(filename):
 
        return X, Y, Z
 
-    X, Y, Z = plot_contour(x, y, z, resolution=500, contour_method='linear')
+    X, Y, Z = plot_contour(x, y, z, resolution=50, contour_method='linear')
 
     fig, ax = plt.subplots(figsize=(13, 8))
     cm = plt.cm.get_cmap('inferno_r')
@@ -161,15 +163,17 @@ def PlotminML(filename):
 
 
 # Calculate SN-CAST data
-minML('NZ_stations', foc_depth=5)
+# minML('NZ_stations', foc_depth=5)
+minML('NZ_CorrStation', foc_depth=5)
 
 # Plot SN-CAST data
-fig, ax = PlotminML('NZ_stations-stat10-foc5-snr3-CAL.grd')
-
+fig, ax = PlotminML('NZ_CorrStation-stat10-foc5-snr10-CAL.grd')
 # Plot reference data
-station_metadata = pd.read_csv('NZ_stations.dat', header=None)
-station_metadata.columns = ['Longitude', 'Latitude', 'Noise', 'Station']
-outlines = gpd.read_file('./shapefiles/nz-coastlines-and-islands-polygons-topo-150k.shp')
+#station_metadata = pd.read_csv('NZ_stations.dat', header=None)
+station_metadata = pd.read_csv('NZ_CorrStation.dat', header=None)
+#station_metadata.columns = ['Longitude', 'Latitude', 'Noise', 'Station']
+station_metadata.columns = ['Longitude', 'Latitude', 'Noise', 'Station', 'MLr_Corr']
+outlines = gpd.read_file('nz-coastlines-and-islands-polygons-topo-150k.shp')
 outlines.boundary.plot(color=None, edgecolor='k', ax=ax, linewidth=1, zorder=3)  # Plot NZ outline
 ax.scatter(station_metadata['Longitude'],
            station_metadata['Latitude'],
