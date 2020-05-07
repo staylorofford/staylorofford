@@ -268,6 +268,10 @@ def find_rotation_angle(shifted_seismogram, reference_seismogram):
             sum = 0
             for m in range(min(len(reference_seismogram[n].data),
                                len(spun_seismogram[n]))):
+                if np.isnan(reference_seismogram[n][m]) or np.isnan(spun_seismogram[n][m]):
+                    # Skip any nan values. These are unlikely, but can get through the window trimming due to
+                    # edge cases where downsampled data contain no nan in the window, but "full" data do.
+                    continue
                 sum += ((spun_seismogram[n][m] - x_mean) *
                         (reference_seismogram[n][m] - y_mean))
             normalised_xcorr_value = (1 / min(len(reference_seismogram[n].data),
@@ -276,11 +280,11 @@ def find_rotation_angle(shifted_seismogram, reference_seismogram):
             x_corr_mean += normalised_xcorr_value
         normalised_xcorr_values.append(x_corr_mean / 2)
     max_xcorr_value = max(normalised_xcorr_values)
-    max_xorr_value_idx = normalised_xcorr_values.index(max_xcorr_value)
+    max_xcorr_value_idx = normalised_xcorr_values.index(max_xcorr_value)
     plt.scatter(list(range(0, 180)), normalised_xcorr_values)
     plt.savefig(event + '_xcorr_values.png')
     plt.clf()
-    return max_xorr_value_idx, normalised_xcorr_values
+    return max_xcorr_value_idx, normalised_xcorr_values
 
 
 def FDSN_station_query(station):
@@ -339,7 +343,7 @@ if __name__ == "__main__":
     all_orientation_angles = []
     all_orientation_angle_xcorr_values = []
     for event in events:
-        print('event is ' + str(event))
+        print('\nevent is ' + str(event))
         # Query event details from GeoNet FDSN
         event_details = get_event(event)[0]
         s_times = []
@@ -420,29 +424,25 @@ if __name__ == "__main__":
                         if fnmatch.fnmatch(tr.stats.channel, values[parameters.index('reference_channels')]) is True:
                             station_stream += tr
                 station_stream.merge()
-                # Assume reference stream has opposite polarity to others and correct this
-                for tr in station_stream:
-                    tr.data = -1 * tr.data
             elif station == values[parameters.index('reference_station')]:
                 station_stream = query_fdsn(station,
                                             '??',
                                             values[parameters.index('reference_channels')],
-                                            start_time.isoformat(),
-                                            end_time.isoformat())[0]
+                                            obspy.core.utcdatetime.UTCDateTime(start_time),
+                                            obspy.core.utcdatetime.UTCDateTime(end_time))[0]
             else:
                 station_stream = query_fdsn(station,
                                             '??',
                                             values[parameters.index('station_channels')],
-                                            start_time.isoformat(),
-                                            end_time.isoformat())[0]
+                                            obspy.core.utcdatetime.UTCDateTime(start_time),
+                                            obspy.core.utcdatetime.UTCDateTime(end_time))[0]
 
             # Filter the waveforms of all events to increase waveform similarly at all sensors:
             # Filter corner frequency satisfies the condition that it is much smaller than the lowest seismic velocity
             # in the propagation medium of all events scaled by the linear distance between each pair of sensors.
-            station_stream.filter(type='bandpass',
-                                  freqmin=1,  # In lieu of removing response, filter data to above 1 Hz so it is more
-                                  # comparable between sensors of different type
-                                  freqmax=float(values[parameters.index('corner_frequency')]))
+            station_stream.detrend(type='linear')
+            station_stream.filter(type='lowpass',
+                                  freq=float(values[parameters.index('corner_frequency')]))
             # Cut first and last 10 seconds of data to remove edge effects introduced by filtering
             station_stream.trim(station_stream[0].stats.starttime + 10,
                                 station_stream[0].stats.endtime - 10)
@@ -522,8 +522,9 @@ if __name__ == "__main__":
                                                             streams[m][n].data[:-shift_idx].filled(
                                                                 float('nan')).tolist())
                     shifted_downsampled_streams[m][n].data = np.asarray([float('nan')] * downsampled_shift_idx +
-                                                            downsampled_streams[m][n].data[
-                                                            :-downsampled_shift_idx].filled(float('nan')).tolist())
+                                                                        downsampled_streams[m][n].data[
+                                                                        :-downsampled_shift_idx].filled(
+                                                                            float('nan')).tolist())
                 else:
                     nandices[1] = len(downsampled_streams[m][n].data) - downsampled_shift_idx
                     shifted_streams[m][n].data = np.asarray(streams[m][n].data[shift_idx:].filled(
@@ -533,7 +534,7 @@ if __name__ == "__main__":
                         float('nan')).tolist() + [float('nan')] * downsampled_shift_idx)
 
             print(stations[m] + ' seismograms have been aligned to the reference station by appling a shift of '
-                  + str(lag_time) +' seconds')
+                  + str(lag_time) + ' seconds')
 
         for m in range(len(reference_station_stream)):
             if ma.is_masked(reference_station_stream[m].data):
@@ -635,9 +636,11 @@ if __name__ == "__main__":
         orientation_angle_xcorr_values = []
         for m in range(len(shifted_streams)):
             print('Station is ' + str(stations[m]))
+
             # Make copies of data streams for shifting
             trimmed_and_shifted_streams = shifted_streams[m].copy()
             trimmed_reference_stream = reference_station_stream.copy()
+
             # Trim data to window
             window_start = xcorr_window[m][0]
             window_end = xcorr_window[m][1]
@@ -646,6 +649,7 @@ if __name__ == "__main__":
             trimmed_reference_stream.trim(starttime=window_start,
                                           endtime=window_end)
 
+            # Plot data for reference
             plt.plot(trimmed_reference_stream[0], color='k')
             plt.plot(trimmed_and_shifted_streams[0], color='k')
             plt.savefig(event + '_trimmed_and_shifted_plot.png')
@@ -679,7 +683,6 @@ if __name__ == "__main__":
             site_orientation_angles[n].append(all_orientation_angles[m][n])
     print('\nNumber of events used for orientation is ' + str(len(events)))
     for n in range(len(site_orientation_angles)):
-        print(site_orientation_angle_xcorr_values[n])
         plt.scatter(list(range(0, 180)), site_orientation_angle_xcorr_values[n])
         plt.savefig(stations_to_orient[n] + '_xcorr_values.png')
 

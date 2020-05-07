@@ -6,11 +6,11 @@
 # Linear distance between any two sensors must be much less than the dominant wavelength in any event after filtering is performed or assumptions in orientation calculation will fail!
 # Choose your events carefully!
 
-eventid_file = /home/samto/PROCESSING/eventids.txt  # Full path to text file containing GeoNet earthquake eventIDs separated by newlines for all events to use in the orientation procedure.
-station_file = /home/samto/PROCESSING/stations.txt # List of stations to calculate sensor orientation for separated by newlines. Sensor orientation will be calculated for all sensors at these stations unless some are excluded using channel filtering.
+eventid_file = /home/samto/PROCESSING/eventid_file  # Full path to text file containing GeoNet earthquake eventIDs separated by newlines for all events to use in the orientation procedure.
+station_file = /home/samto/PROCESSING/station_file # List of stations to calculate sensor orientation for separated by newlines. Sensor orientation will be calculated for all sensors at these stations unless some are excluded using channel filtering.
 station_channels = HH?  # In format of FDSN query, channel code(s) to load in for sensors. Only the first two characters are used in channel parsing as both horizontal components are required for the calculation.
-corner_frequency = 10  # Frequency to use for low pass filter.
-reference_station = POR5 # Station code of station to use as reference for orientation calculation. If existing, the code will use HH? channels in preference to EH? channels in preference to HN? channels.
-reference_channels = EH?  # As with station_channels, but for the reference station.
+corner_frequency = 5  # Frequency to use for low pass filter.
+reference_station = COD1 # Station code of station to use as reference for orientation calculation. If existing, the code will use HH? channels in preference to EH? channels in preference to HN? channels.
+reference_channels = HH?  # As with station_channels, but for the reference station.
 local_reference = True # Whether the reference station data is local (True) or not (False). Local reference station data is accessible from local storage and all metadata is assumed to be in the data files.
-reference_data_dir = /mnt/hgfs/VMSHARE/URZ/ # Path to local reference data. If local_reference != True then this value is not used in the script.
+reference_data_dir = /home/samto/PROCESSING/COVZ/2020/XX/COD1/ # Path to local reference data. If local_reference != True then this value is not used in the script. All reference data should be in the one folder.
