@@ -789,42 +789,43 @@ def do_plotting(datalist, m, n, data_types, description=None, regression_pairs=N
         max_xdistro = max(x_distro)
         for idx in range(len(x_distro)):
             x_distro[idx] = x_distro[idx] / max_xdistro + 2
-        x_vals, x_distro = zip(*sorted(zip(x_vals, x_distro)))
-        plt.plot(x_vals, x_distro, color='k', linewidth=1)
+        x_vals_sorted, x_distro_sorted = zip(*sorted(zip(x_vals, x_distro)))
+        plt.plot(x_vals_sorted, x_distro_sorted, color='k', linewidth=1)
 
     if len(y_distro) > 0:
         max_ydistro = max(y_distro)
         for idx in range(len(y_distro)):
             y_distro[idx] = y_distro[idx] / max_ydistro + 2
-        y_vals, y_distro = zip(*sorted(zip(y_vals, y_distro)))
-        plt.plot(y_distro, y_vals, color='k', linewidth=1)
+        y_vals_sorted, y_distro_sorted= zip(*sorted(zip(y_vals, y_distro)))
+        plt.plot(y_distro_sorted, y_vals_sorted, color='k', linewidth=1)
 
-    if [data_types[n], data_types[m]] in regression_pairs:
-        # Limit the data to those in the regression interval
-        pair_idx = regression_pairs.index([data_types[n], data_types[m]])
-        x_inrange = []
-        y_inrange = []
-        for idx, xval in enumerate(x):
-            if regression_limits[pair_idx][0] <= xval <= regression_limits[pair_idx][1]:
-                x_inrange.append(xval)
-                y_inrange.append(y[idx])
-        x, y = x_inrange, y_inrange
+    if regression_pairs is not None:
+        if [data_types[n], data_types[m]] in regression_pairs:
+            # Limit the data to those in the regression interval
+            pair_idx = regression_pairs.index([data_types[n], data_types[m]])
+            x_inrange = []
+            y_inrange = []
+            for idx, xval in enumerate(x_vals):
+                if regression_limits[pair_idx][0] <= xval <= regression_limits[pair_idx][1]:
+                    x_inrange.append(xval)
+                    y_inrange.append(bin_means[idx])
+            x, y = x_inrange, y_inrange
 
-        # Calculate orthogonal regression line
-        slope, intercept, slope_err, intercept_err = orthregress(x, y)
+            # Calculate orthogonal regression line
+            slope, intercept, slope_err, intercept_err = orthregress(x, y)
 
-        # Use 3 standard errors to capture the variability of the sample means over the line regression interval
-        x.sort()
-        y1 = [((slope - 3 * slope_err) * x_val + (intercept + 3 * intercept_err)) for x_val in x]
-        y2 = [((slope + 3 * slope_err) * x_val + (intercept - 3 * intercept_err)) for x_val in x]
-        plt.fill_between(x, y1, y2, fc='k', ec='None', alpha=0.1)
-        plt.plot(x, [(slope * x_val + intercept) for x_val in x], color='k', linewidth=1, alpha=0.8)
-        print('Regression pair is ' + data_types[n] + ', ' + data_types[m])
-        print('Regression interval is ' + str(regression_limits[pair_idx][0]) +
-              '-' + str(regression_limits[pair_idx][1]))
-        print('m=' + str(slope) +
-              '\nc=' + str(intercept) +
-              '\nm_stderr=' + str(slope_err) +
+            # Use 3 standard errors to capture the variability of the sample means over the line regression interval
+            x.sort()
+            y1 = [((slope - 3 * slope_err) * x_val + (intercept + 3 * intercept_err)) for x_val in x]
+            y2 = [((slope + 3 * slope_err) * x_val + (intercept - 3 * intercept_err)) for x_val in x]
+            plt.fill_between(x, y1, y2, fc='k', ec='None', alpha=0.1)
+            plt.plot(x, [(slope * x_val + intercept) for x_val in x], color='k', linewidth=1, alpha=0.8)
+            print('Regression pair is ' + data_types[n] + ', ' + data_types[m])
+            print('Regression interval is ' + str(regression_limits[pair_idx][0]) +
+                  '-' + str(regression_limits[pair_idx][1]))
+            print('m=' + str(slope) +
+                  '\nc=' + str(intercept) +
+                  '\nm_stderr=' + str(slope_err) +
               '\nc_stderr=' + str(intercept_err))
 
     # Add plot features for clarity
@@ -882,6 +883,8 @@ comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['Mw']]
 # Set which magnitude type pairs to do orthogonal regression for
 regression_pairs = [['mB', 'unified_Mw'], ['MLv', 'unified_Mw']]
 regression_limits = [[5.3, 9], [3, 9]]
+# regression_pairs = None
+# regression_limits = None
 
 # Set matching parameters
 
@@ -894,9 +897,9 @@ rms_threshold = 5  # origin time potential matches must be within (in seconds) w
 # Set what level of processing you want the script to do
 build_magnitude_timeseries = False  # Should the script build the magnitude timeseries, or they exist already?
 build_GeoNet_Mw_timeseries = False  # Should the script build a magnitude timeseries for the GeoNet Mw catalog?
-gb_plotting = True  # Should the script produce Gutenburg-Richter style plots?
+gb_plotting = False  # Should the script produce Gutenburg-Richter style plots?
 matching = False  # Should the script match events within and between catalogs?
-mw_merging = False  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
+mw_merging = True  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
 show_matching = False  # Should the script show the operator those events in the match window if matching is performed?
 
 # Build event catalogs from FDSN
