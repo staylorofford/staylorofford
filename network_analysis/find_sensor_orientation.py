@@ -1,6 +1,8 @@
 """
 Script to find a sensor's orientation using teleseismic events. Requires events be queryable from FDSN, and that
 stations to orient have metadata and data in FDSN for the events.
+
+Note: functionality with multiple stations to orient has not been tested.
 """
 
 import datetime
@@ -135,16 +137,18 @@ def find_lag_time(stream, reference_stream, phase):
     # Find the lag time from the maximum cross-correlation value between the two waveforms
     xcorr_values = []
     ref_envelope = ref_envelope.filled(0).tolist() + len(stream_envelope) * [0]
-    ref_envelope = np.asarray(smooth_data(ref_envelope, int(values[parameters.index('corner_frequency')])))
+    ref_envelope = np.asarray(
+        smooth_data(ref_envelope, int(2 * round(1/float(values[parameters.index('lower_frequency')])))))
     for m in range(2 * len(stream_envelope)):
 
         # Shift the stream
         if m <= len(stream_envelope):
             shifted_stream_envelope = (len(stream_envelope) - m) * [0] + stream_envelope.filled(0).tolist() + m * [0]
         else:
-            shifted_stream_envelope = max(0, len(stream_envelope) - m) * [0] + stream_envelope[:len(stream_envelope) - m].filled(0).tolist() + m * [0]
-        shifted_stream_envelope = np.asarray(smooth_data(shifted_stream_envelope,
-                                                         int(values[parameters.index('corner_frequency')])))
+            shifted_stream_envelope = max(0, len(stream_envelope) - m) * [0] + \
+                                      stream_envelope[:len(stream_envelope) - m].filled(0).tolist() + m * [0]
+        shifted_stream_envelope = np.asarray(
+            smooth_data(shifted_stream_envelope, int(2 * round(1/float(values[parameters.index('lower_frequency')])))))
 
         # Perform cross-correlation
         try:
@@ -156,6 +160,7 @@ def find_lag_time(stream, reference_stream, phase):
 
     # Find lag time from highest cross-correlation value
     max_xcorr_value = max(xcorr_values)
+    print('Correlation value at best alignment of total energy waveforms is: ' + str(max_xcorr_value))
     lag_time = (1 / stream[0].stats.sampling_rate) * (len(stream_envelope) - xcorr_values.index(max_xcorr_value))
 
     return lag_time
@@ -257,31 +262,35 @@ def find_rotation_angle(shifted_seismogram, reference_seismogram, phase):
             normalised_xcorr_values.append(x_corr_mean)
         # Give the max corr value
         max_xcorr_value = max(normalised_xcorr_values)
-        max_xcorr_value_idx = [0, 180][normalised_xcorr_values.index(max_xcorr_value)]  # The angle to rotate by
+        print('Cross-correlation values for p-phase correlation (1 * data, -1 * data) are: ')
+        print(normalised_xcorr_values)
+        max_xcorr_value_idx = [1, -1][normalised_xcorr_values.index(max_xcorr_value)]  # The factor to scale by
 
     elif phase.lower() == 's':
-        for angle in range(0, 180):
+        for angle in range(0, 360):
             rad = math.radians(angle)
             north_component = []  # "north" component after rotation
             east_component = []  # "east" component after rotation
 
             # Spin the seismogram components clockwise by angle
-            if 0 <= angle <= 90:
-                for m in range(len(shifted_seismogram[0])):
-                    north_component.append(math.cos(rad) * shifted_seismogram[0][m] +
-                                           math.sin(rad) * shifted_seismogram[1][m])
-                    east_component.append(-math.sin(rad) * shifted_seismogram[0][m] +
-                                          math.cos(rad) * shifted_seismogram[1][m])
-            elif 90 < angle < 180:
-                for m in range(len(shifted_seismogram[0])):
-                    north_component.append(-math.cos(rad) * shifted_seismogram[0][m] +
-                                           math.sin(rad) * shifted_seismogram[1][m])
-                    east_component.append(-math.sin(rad) * shifted_seismogram[0][m] -
-                                          math.cos(rad) * shifted_seismogram[1][m])
+            for m in range(len(shifted_seismogram[0])):
+                north_component.append(math.cos(rad) * shifted_seismogram[0][m] +
+                                       math.sin(rad) * shifted_seismogram[1][m])
+                east_component.append(-math.sin(rad) * shifted_seismogram[0][m] +
+                                      math.cos(rad) * shifted_seismogram[1][m])
+
+            # Make sure channel order in spun seismogram matches that in reference seismogram
+            if reference_seismogram[0].stats.channel[-1] == 'N' and reference_seismogram[1].stats.channel[-1] == 'E':
+                spun_seismogram = [north_component, east_component]
+            elif reference_seismogram[0].stats.channel[-1] == 'E' and reference_seismogram[1].stats.channel[-1] == 'N':
+                spun_seismogram = [east_component, north_component]
+            else:
+                print('Mate, what is that reference seismogram? It has not got N and E channels? How can it be a '
+                      'reference seismogram if it is not oriented? I am not even going to try, I am going to exit.')
+                exit()
 
             # Cross-correlate the seismogram with the reference seismogram
             x_corr_mean = 0
-            spun_seismogram = [north_component, east_component]
             for n in range(len(reference_seismogram)):
                 x_mean = np.nanmean(spun_seismogram[n])
                 y_mean = np.nanmean(reference_seismogram[n].data)
@@ -301,6 +310,13 @@ def find_rotation_angle(shifted_seismogram, reference_seismogram, phase):
                                           sum / math.sqrt(x_var * y_var))
                 x_corr_mean += normalised_xcorr_value
             normalised_xcorr_values.append(x_corr_mean / 2)
+
+            # plt.plot(reference_seismogram[0], linestyle='-', color='b')
+            # plt.plot(reference_seismogram[1], linestyle='-', color='r')
+            # plt.plot(spun_seismogram[0], linestyle='--', color='b')
+            # plt.plot(spun_seismogram[1], linestyle='--', color='r')
+            # plt.savefig(event + '_' + str(angle) + '_' + str(x_corr_mean / 2) + '_plot.png')
+            # plt.clf()
 
         # Give the max corr value
         max_xcorr_value = max(normalised_xcorr_values)
@@ -334,7 +350,7 @@ def FDSN_station_query(station):
     return latitude, longitude, depth
 
 
-def get_data(arrival_times, query_stations, parameters, values):
+def get_data(arrival_times, query_stations, phase, parameters, values):
 
     """
     Get data for the given stations and input parameters for the given phase in arrival times.
@@ -342,8 +358,11 @@ def get_data(arrival_times, query_stations, parameters, values):
 
     # Assume non-scattered phase arrivals do not occur after 20 seconds after the
     # last first arrival at any station
-    start_time = min(arrival_times) - datetime.timedelta(seconds=20)
-    end_time = max(arrival_times) + datetime.timedelta(seconds=20)
+
+    start_time = min(arrival_times) - datetime.timedelta(seconds=
+                                                         int(values[parameters.index(phase + '_window')]))
+    end_time = max(arrival_times) + datetime.timedelta(seconds=
+                                                       int(values[parameters.index(phase + '_window')]))
 
     # Query waveform data from GeoNet FDSN for each station between the start and end times defined for the event
     stations = []
@@ -389,9 +408,9 @@ def get_data(arrival_times, query_stations, parameters, values):
         # Filter the waveforms of all events to increase waveform similarly at all sensors:
         # Filter corner frequency satisfies the condition that it is much smaller than the lowest seismic velocity
         # in the propagation medium of all events scaled by the linear distance between each pair of sensors.
-        station_stream.detrend(type='linear')
-        station_stream.filter(type='lowpass',
-                              freq=float(values[parameters.index('corner_frequency')]))
+        station_stream.filter(type='bandpass',
+                              freqmin=float(values[parameters.index('lower_frequency')]),
+                              freqmax=float(values[parameters.index('upper_frequency')]))
         # Cut first and last 10 seconds of data to remove edge effects introduced by filtering
         station_stream.trim(station_stream[0].stats.starttime + 10,
                             station_stream[0].stats.endtime - 10)
@@ -399,7 +418,7 @@ def get_data(arrival_times, query_stations, parameters, values):
         # Resample a copy of the stream to twice the corner frequency
         downsampled_station_stream = station_stream.copy()
         for trace in downsampled_station_stream:
-            trace.resample(2 * int(values[parameters.index('corner_frequency')]))
+            trace.resample(int(2 * round(1/float(values[parameters.index('upper_frequency')]))))
             min_times.append(trace.stats.starttime)
             max_times.append(trace.stats.endtime)
 
@@ -440,7 +459,7 @@ def align_seismograms(stations, arrival_times, streams, downsampled_streams, ref
     shifted_streams = streams
     shifted_downsampled_streams = downsampled_streams
     for m in range(len(streams)):
-        # Cut the lag time streams to 5 seconds before and after the S arrival at each site
+        # Cut the lag time streams to 5 seconds before and after the arrival at each site
         station_stream = downsampled_streams[m].copy()
         try:
             station_stream.trim(starttime=UTCDateTime(arrival_times[stations.index(stations[m])] -
@@ -448,7 +467,7 @@ def align_seismograms(stations, arrival_times, streams, downsampled_streams, ref
                                 endtime=UTCDateTime(arrival_times[stations.index(stations[m])] +
                                                     datetime.timedelta(seconds=5)))
         except ValueError:
-            # When there is no s data for the station, use the minimum and maximum from the other sites
+            # When there is no data for the station, use the minimum and maximum from the other sites
             station_stream.trim(starttime=UTCDateTime(min(arrival_times) - datetime.timedelta(seconds=5)),
                                 endtime=UTCDateTime(max(arrival_times) + datetime.timedelta(seconds=5)))
         reference_stream = downsampled_rss.copy()
@@ -458,7 +477,7 @@ def align_seismograms(stations, arrival_times, streams, downsampled_streams, ref
                                     endtime=UTCDateTime(arrival_times[stations.index(values[parameters.index(
                                         'reference_station')])] + datetime.timedelta(seconds=5)))
         except ValueError:
-            # When there is no s data for the station, use the minimum and maximum from the other sites
+            # When there is no data for the station, use the minimum and maximum from the other sites
             reference_stream.trim(starttime=UTCDateTime(min(arrival_times) - datetime.timedelta(seconds=5)),
                                   endtime=UTCDateTime(max(arrival_times) + datetime.timedelta(seconds=5)))
         lag_time = find_lag_time(station_stream, reference_stream, phase)
@@ -514,20 +533,13 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
     # Calculate horizontal total energy for the reference stream
     reference_total_energy_waveform = calculate_total_energy(downsampled_rss, phase)
     reference_total_energy_waveform = np.asarray(smooth_data(
-        reference_total_energy_waveform, int(values[parameters.index('corner_frequency')])))
+        reference_total_energy_waveform, int(2 * round(1/float(values[parameters.index('lower_frequency')])))))
     for m in range(len(shifted_downsampled_streams)):
         # Calculate horizontal total energy for the station stream
         downsampled_sss = shifted_downsampled_streams[m].copy()
         shifted_stream_total_energy_waveform = calculate_total_energy(downsampled_sss, phase)
         shifted_stream_total_energy_waveform = np.asarray(smooth_data(
-            shifted_stream_total_energy_waveform, int(values[parameters.index('corner_frequency')])))
-        plot1 = reference_total_energy_waveform / np.nanmax(reference_total_energy_waveform)
-        plot2 = shifted_stream_total_energy_waveform / np.nanmax(
-            shifted_stream_total_energy_waveform)
-        plt.plot(plot1, color='b')
-        plt.plot(plot2, color='r', alpha=0.8)
-        plt.savefig(event + '_smoothed_shifted_waveforms.png')
-        plt.clf()
+            shifted_stream_total_energy_waveform, int(2 * round(1/float(values[parameters.index('lower_frequency')])))))
 
         # Initiate one loop to work through each possible start time in the waveform
         normalised_xcorr_values = [([0] * len(reference_total_energy_waveform))
@@ -536,8 +548,10 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
             if nandices[1] and n > nandices[1]:  # Don't do cross-correlation past the data
                 break
             # Initiate a second loop to work through each possible end time in the waveform,
-            # so that all possible windows are tested, BUT require that windows are at least 1 second in length.
-            for o in range(n + 5 * int(shifted_downsampled_streams[m][0].stats.sampling_rate) + 1,
+            # so that all possible windows are tested, BUT require that windows are at least 1 wavelength of the
+            # lowest frequency wavelet in length.
+            for o in range(n + int(round(1/float(values[parameters.index('lower_frequency')]))) *
+                           int(shifted_downsampled_streams[m][0].stats.sampling_rate) + 1,
                            len(reference_total_energy_waveform)):
                 if nandices[1] and o > nandices[1]:  # Don't do cross-correlation past the data
                     break
@@ -568,7 +582,7 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
                 normalised_xcorr_values[n][o] = normalised_xcorr_value
         if np.nanmax(normalised_xcorr_values) == 0:
             print('Seismograms failed to find any suitable correlation window!')
-            exit()
+            return np.nan
         normalised_xcorr_values = np.asarray(normalised_xcorr_values)
         max_normalised_xcorr_value_idx = np.unravel_index(np.nanargmax(normalised_xcorr_values),
                                                           normalised_xcorr_values.shape)
@@ -578,6 +592,7 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
               ' (index ' + str(max_normalised_xcorr_value_idx[0]) + ' in downsampled data) - ' +
               str(downsampled_sss[0].times(type='utcdatetime')[max_normalised_xcorr_value_idx[1]]) +
               ' in the aligned data (index ' + str(max_normalised_xcorr_value_idx[1]) + ' in the downsampled data)')
+        print('Maximum cross-correlation value is: ' + str(normalised_xcorr_values[max_normalised_xcorr_value_idx]))
         if nandices[0] > max_normalised_xcorr_value_idx[0]:
             print('There are ' + str(nandices[0] - max_normalised_xcorr_value_idx[0]) +
                   ' NaN values at the front of the cross-correlation window in the downsampled aligned data')
@@ -595,8 +610,8 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
 if __name__ == "__main__":
 
     # Parse data from config file
-    parameters = ['eventid_file', 'station_file', 'station_channels', 'corner_frequency', 'reference_station',
-                  'reference_channels', 'local_reference', 'reference_data_dir']
+    parameters = ['eventid_file', 'station_file', 'station_channels', 'lower_frequency', 'upper_frequency', 'p_window',
+                  's_window', 'reference_station', 'reference_channels', 'local_reference', 'reference_data_dir']
     values = [0] * len(parameters)
     config_file = os.path.dirname(os.path.realpath(__file__)) + '/config-find_sensor_orientation.txt'
     with open(config_file, 'r') as openfile:
@@ -681,13 +696,12 @@ if __name__ == "__main__":
                 s_times.append(origin_time + datetime.timedelta(seconds=s_tt))
                 s_stations.append(station)
 
-        phase = 'p'
-
         # Get data around P phase
+        phase = 'p'
         reference_station_stream, downsampled_rss, streams, downsampled_streams = \
-            get_data(p_times, query_stations, parameters, values)
+            get_data(p_times, query_stations, phase, parameters, values)
 
-        print('All data has been loaded into the script. '
+        print('All P-phase data has been loaded into the script. '
               'Finding shift times to apply to each station to align them with the reference station...')
 
         # Align P phase data
@@ -695,17 +709,17 @@ if __name__ == "__main__":
             align_seismograms(p_stations, p_times, streams, downsampled_streams, reference_station_stream,
                               downsampled_rss, phase, parameters, values)
 
-        print('All seismograms have now been aligned. Searching now for the optimal cross-correlation windows...')
-
-        plt.plot(reference_station_stream[0], color='b')
-        plt.plot(shifted_streams[0][0], color='r', alpha=0.8)
-        plt.savefig(event + '_shifted_plot.png')
-        plt.clf()
+        print('All P-phase seismograms have now been aligned. '
+              'Searching now for the optimal cross-correlation windows...')
 
         xcorr_window = find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, phase, parameters,
                                          values)
+        if xcorr_window is np.nan:
+            print('This event will not continue through the analysis.')
+            continue
 
-        print('All cross-correlation windows are now defined. The orientation angles will now be calculated...')
+        print('All P-phase cross-correlation windows are now defined. '
+              'The orientation angles will now be calculated...')
 
         # Perform the orientation angle calculation in the cross-correlation window
         orientation_angles = []
@@ -725,28 +739,95 @@ if __name__ == "__main__":
             trimmed_reference_stream.trim(starttime=window_start,
                                           endtime=window_end)
 
-            if phase.lower() == 'p':
-                # Retain only z component data
-                for n, tr in enumerate(trimmed_and_shifted_streams):
-                    if tr.stats.channel[-1] == 'Z':
-                        trimmed_and_shifted_streams = [tr]
-                for n, tr in enumerate(trimmed_reference_stream):
-                    if tr.stats.channel[-1] == 'Z':
-                        trimmed_reference_stream = [tr]
-            elif phase.lower() == 's':
-                # Remove all z component data
-                for n, tr in enumerate(trimmed_and_shifted_streams):
-                    if tr.stats.channel[-1] == 'Z':
-                        trimmed_and_shifted_streams.pop(n)
-                for n, tr in enumerate(trimmed_reference_stream):
-                    if tr.stats.channel[-1] == 'Z':
-                        trimmed_reference_stream.pop(n)
+            # Retain only z component data
+            for n, tr in enumerate(trimmed_and_shifted_streams):
+                if tr.stats.channel[-1] == 'Z':
+                    trimmed_and_shifted_streams = [tr]
+            for n, tr in enumerate(trimmed_reference_stream):
+                if tr.stats.channel[-1] == 'Z':
+                    trimmed_reference_stream = [tr]
+
+            # Calculate angle
+            polarity, xcorr_values = find_rotation_angle(trimmed_and_shifted_streams, trimmed_reference_stream, phase)
+            print('Polarity is ' + str(polarity))
+
+        # Get data around S phase
+        phase = 's'
+        reference_station_stream, downsampled_rss, streams, downsampled_streams = \
+            get_data(s_times, query_stations, phase, parameters, values)
+
+        # Scale data by polarity
+        for tr in reference_station_stream:
+            tr.data *= polarity
+        for tr in downsampled_rss:
+            tr.data *= polarity
+        for stream in streams:
+            for tr in stream:
+                tr.data *= polarity
+        for stream in downsampled_streams:
+            for tr in stream:
+                tr.data *= polarity
+
+        print('All S-phase data has been loaded into the script. '
+              'Finding shift times to apply to each station to align them with the reference station...')
+
+        # Align S phase data
+        nandices, reference_station_stream, downsampled_rss, shifted_streams, shifted_downsampled_streams = \
+            align_seismograms(s_stations, s_times, streams, downsampled_streams, reference_station_stream,
+                              downsampled_rss, phase, parameters, values)
+
+        print('All S-phase seismograms have now been aligned. '
+              'Searching now for the optimal cross-correlation windows...')
+
+        plt.plot(reference_station_stream[0].data, linestyle='-', color='b')
+        plt.plot(reference_station_stream[1].data, linestyle='-', color='r')
+        plt.plot(shifted_streams[0][0].data, linestyle='--', color='b')
+        plt.plot(shifted_streams[0][1].data, linestyle='--', color='r')
+        plt.savefig(event + '_shifted_plot.png')
+        plt.clf()
+
+        xcorr_window = find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, phase, parameters,
+                                         values)
+        if xcorr_window is np.nan:
+            print('This event will not continue through the analysis.')
+            continue
+
+        print('All S-phase cross-correlation windows are now defined. '
+              'The orientation angles will now be calculated...')
+
+        # Perform the orientation angle calculation in the cross-correlation window
+        orientation_angles = []
+        orientation_angle_xcorr_values = []
+        for m in range(len(shifted_streams)):
+            print('Station is ' + str(shifted_streams[m][0].stats.station))
+
+            # Make copies of data streams for shifting
+            trimmed_and_shifted_streams = shifted_streams[m].copy()
+            trimmed_reference_stream = reference_station_stream.copy()
+
+            # Trim data to window
+            window_start = xcorr_window[m][0]
+            window_end = xcorr_window[m][1]
+            trimmed_and_shifted_streams.trim(starttime=window_start,
+                                             endtime=window_end)
+            trimmed_reference_stream.trim(starttime=window_start,
+                                          endtime=window_end)
+
+            # Remove all z component data
+            for n, tr in enumerate(trimmed_and_shifted_streams):
+                if tr.stats.channel[-1] == 'Z':
+                    trimmed_and_shifted_streams.pop(n)
+            for n, tr in enumerate(trimmed_reference_stream):
+                if tr.stats.channel[-1] == 'Z':
+                    trimmed_reference_stream.pop(n)
 
             # Plot data for reference
-            plt.plot(trimmed_reference_stream[0].data, color='k')
-            plt.plot(trimmed_and_shifted_streams[0].data, color='b')
-            plt.plot(-1 * trimmed_and_shifted_streams[0].data, color='r')
+            plt.plot(trimmed_reference_stream[0].data, linestyle='-', color='b')
+            plt.plot(trimmed_reference_stream[1].data, linestyle='-', color='r')
+            plt.plot(trimmed_and_shifted_streams[0].data, linestyle='--', color='b')
+            plt.plot(trimmed_and_shifted_streams[1].data, linestyle='--', color='r')
             plt.savefig(event + '_trimmed_and_shifted_plot.png')
+
             plt.clf()
 
             # Calculate angle
@@ -756,16 +837,13 @@ if __name__ == "__main__":
             orientation_angles.append(orientation_angle)
             orientation_angle_xcorr_values.append(xcorr_values)
 
-            # Can now get vertical polarity relative to reference... need to feed this back into rotation routine
-            # and add functionality for microseisms.
-
         # Save orientation angles for the event
         all_orientation_angles.append(orientation_angles)
         all_orientation_angle_xcorr_values.append(orientation_angle_xcorr_values)
 
     # Calculate average orientation angle and error from angle distributions
     site_orientation_angles = [[] for n in range(len(stations_to_orient))]
-    site_orientation_angle_xcorr_values = [[0] * len(list(range(0, 180))) for n in range(len(stations_to_orient))]
+    site_orientation_angle_xcorr_values = [[0] * len(list(range(0, 360))) for n in range(len(stations_to_orient))]
     for m in range(len(events)):
         for n in range(len(stations_to_orient)):
             for o in range(len(all_orientation_angle_xcorr_values[m][n])):
@@ -773,7 +851,7 @@ if __name__ == "__main__":
             site_orientation_angles[n].append(all_orientation_angles[m][n])
     print('\nNumber of events used for orientation is ' + str(len(events)))
     for n in range(len(site_orientation_angles)):
-        plt.scatter(list(range(0, 180)), site_orientation_angle_xcorr_values[n])
+        plt.scatter(list(range(0, 360)), site_orientation_angle_xcorr_values[n])
         plt.savefig(stations_to_orient[n] + '_xcorr_values.png')
 
         print('Site is: ' + str(stations_to_orient[n]))
