@@ -81,11 +81,11 @@ channels = ['HNZ']  # the same channels will be loaded for test sites
 
 # Set parameters for where to find test site data
 test_data_dir = '/home/samto/PROCESSING/2020/'  # root directory under which all test data exists
-test_sites = ['TES1', 'TES2', 'TES3', 'TES4']
-location_codes = ['20', '20', '20', '20']
+test_sites = ['TES1', 'TES2', 'TES3', 'TES3', 'TES4']
+location_codes = ['20', '20', '20', '21', '20']  # corresponding to respective site codes
 
 # Set how to filter the data, if at all. Use filter_type=None to negate filtering. Filter types are those in obspy.
-filter_type = 'bandpass'
+filter_type = None
 minimum_frequency = 2
 maximum_frequency = 15
 
@@ -95,7 +95,7 @@ spectrogram = False
 
 # Set whether to normalise each trace. Use None or False to negate normalisation.
 # Note: if both spectrogram and normalise are true, then time domain waveforms will be plotted over spectrograms.
-normalise = False
+normalise = True
 
 # Reference times to overlay on plots. Use None to negate reference time plotting. Time format is ISO8601.
 reference_times = None
@@ -132,17 +132,19 @@ else:
 
 # Parse local data over the period of the event
 test_data = obspy.core.stream.Stream()
+loaded_files = []
 for root, dirs, files in os.walk(test_data_dir):
     for file in files:
-        for test_site in test_sites:
-            for channel in channels:
-                for doy in data_doys:
-                    if test_site in file and channel in file and str(doy) in file:
-                        loaded_data = obspy.read(root + '/' + file)
-                        if loaded_data[0].stats.starttime <= start_time and loaded_data[0].stats.endtime >= end_time:
-                            loaded_data.merge(method=1,
-                                              fill_value='interpolate')  # Ensure loaded data is in a single stream
-                            test_data += loaded_data
+        for n in range(len(test_sites)):
+            for doy in data_doys:
+                if test_sites[n] in file and location_codes[n] in file and channel in file and str(doy) in file and \
+                        file not in loaded_files:
+                    loaded_data = obspy.read(root + '/' + file)
+                    if loaded_data[0].stats.starttime <= start_time and loaded_data[0].stats.endtime >= end_time:
+                        loaded_data.merge(method=1,
+                                          fill_value='interpolate')  # Ensure loaded data is in a single stream
+                        test_data += loaded_data
+                        loaded_files.append(file)
 
 # Trim local data to event period
 test_data.trim(starttime=start_time,
@@ -162,7 +164,7 @@ if filter_type:
     stream.trim(starttime=start_time,
                 endtime=end_time)
 
-print(stream)
+stream.plot()
 
 # Find min/max values of each trace
 min_max_values = [[0] * len(stream),
