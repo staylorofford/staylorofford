@@ -10,6 +10,7 @@ import io
 import obspy
 from obspy.clients.fdsn import Client
 from obspy.io.quakeml.core import Unpickler
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pycurl
@@ -17,8 +18,8 @@ import pycurl
 # Set up objects to use imported modules
 quakeml_reader = Unpickler()
 
-def curl(curlstr):
 
+def curl(curlstr):
     """
     Perform curl with curlstr
     :param curlstr: string to curl
@@ -56,7 +57,6 @@ def query_fdsn(station, location, channel, starttime, endtime):
 
 
 def FDSN_event_query(eventID):
-
     """
     Use obspy with pycurl to query event details via FDSN..
 
@@ -72,16 +72,17 @@ def FDSN_event_query(eventID):
 
 
 # Give eventID to analyse
-eventID = '2019p610402'
+eventID = '2020p391429'
 
 # Set parameters for which data to collect from FDSN
-stations = ['RITZ']
-locations = ['??']
-channels = ['??Z']  # the same channels will be loaded for test sites
+stations = ['INSS']
+locations = ['20']
+channels = ['HNZ']  # the same channels will be loaded for test sites
 
 # Set parameters for where to find test site data
-test_data_dir = '/mnt/hgfs/VMSHARE/'
-test_sites = ['T704', 'T731', 'T736', 'T1630']
+test_data_dir = '/home/samto/PROCESSING/2020/'  # root directory under which all test data exists
+test_sites = ['TES1', 'TES2', 'TES3', 'TES4']
+location_codes = ['20', '20', '20', '20']
 
 # Set how to filter the data, if at all. Use filter_type=None to negate filtering. Filter types are those in obspy.
 filter_type = 'bandpass'
@@ -120,7 +121,7 @@ for station in stations:
                                       start_time,
                                       end_time)
         stream += query_stream
-        
+
 # Find which days to load data for
 start_date = start_time.datetime.timetuple().tm_yday
 end_date = end_time.datetime.timetuple().tm_yday
@@ -131,14 +132,18 @@ else:
 
 # Parse local data over the period of the event
 test_data = obspy.core.stream.Stream()
-for test_site in test_sites:
-    for channel in channels:
-        for doy in data_doys:
-            loaded_data = obspy.read(test_data_dir + '*' + test_site + '.10.' + str(doy) + '.' + channel + '.ms')
-            loaded_data.merge(method=1,
-                              fill_value='interpolate')  # Ensure loaded data is in a single stream
-            test_data += loaded_data
-            
+for root, dirs, files in os.walk(test_data_dir):
+    for file in files:
+        for test_site in test_sites:
+            for channel in channels:
+                for doy in data_doys:
+                    if test_site in file and channel in file and str(doy) in file:
+                        loaded_data = obspy.read(root + '/' + file)
+                        if loaded_data[0].stats.starttime <= start_time and loaded_data[0].stats.endtime >= end_time:
+                            loaded_data.merge(method=1,
+                                              fill_value='interpolate')  # Ensure loaded data is in a single stream
+                            test_data += loaded_data
+
 # Trim local data to event period
 test_data.trim(starttime=start_time,
                endtime=end_time)
@@ -151,11 +156,13 @@ if filter_type:
     stream = stream.detrend(type='simple')
     stream = stream.filter(type=filter_type,
                            freqmin=minimum_frequency,
-                           freqmax=maximum_frequency, 
+                           freqmax=maximum_frequency,
                            corners=4,
                            zerophase=True)
     stream.trim(starttime=start_time,
                 endtime=end_time)
+
+print(stream)
 
 # Find min/max values of each trace
 min_max_values = [[0] * len(stream),
@@ -168,7 +175,6 @@ for n in range(len(stream)):
         stream[n].data = stream[n].data / max(abs(min(stream[n].data)),
                                               max(stream[n].data))
     if normalise and spectrogram:
-
         # First shift the data so the mean sits at the middle of the nyquist frequency range
         mean_value = np.mean(stream[n].data)
         shift_value = mean_value - 25
@@ -186,7 +192,8 @@ for n in range(len(stream)):
     min_max_values[1][n] = stream[n].stats.endtime
     min_max_values[2][n] = min(stream[n].data)
     min_max_values[3][n] = max(stream[n].data)
-    min_max_values[4][n] = stream[n].stats.network + '.' + stream[n].stats.station + '.' + stream[n].stats.location + '.' + \
+    min_max_values[4][n] = stream[n].stats.network + '.' + stream[n].stats.station + '.' + stream[
+        n].stats.location + '.' + \
                            stream[n].stats.channel
 min_plot_time = min(min_max_values[0])
 max_plot_time = max(min_max_values[1])
@@ -203,7 +210,7 @@ if reference_times:
         reference_times[m] = (reference_times[m] - min_plot_time.datetime).total_seconds()
 
 # Plot the data and overlay reference times if desired
-fig = plt.figure(figsize=(12,9))
+fig = plt.figure(figsize=(12, 9))
 stream.plot(fig=fig,
             type='relative',
             zorder=2)
@@ -236,6 +243,7 @@ for n in range(len(fig.axes)):
                         colors='red')
 if not filter_type:
     filter_type = 'no'
-plt.savefig(eventID + '_' + filter_type + '_filter_' + str(minimum_frequency) + '-' + str(maximum_frequency) + '_Hz' + '.png', 
-            dpi=300)
+plt.savefig(
+    eventID + '_' + filter_type + '_filter_' + str(minimum_frequency) + '-' + str(maximum_frequency) + '_Hz' + '.png',
+    dpi=300)
 plt.show()
