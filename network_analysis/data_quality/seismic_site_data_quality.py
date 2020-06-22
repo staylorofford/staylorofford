@@ -29,17 +29,17 @@ from assume_role import assume_role
 from create_key_list import create_miniseed_key_list
 
 
-def calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency, starttime, endtime):
+def calculate_noise(data, filter_type, minimum_frequency, maximum_frequency, starttime, endtime):
 
     """
-    Calculate data quality via data completeness and RMS value.
+    Calculate average noise for a seismic site in the recorded units.
     :param data: obspy Stream object containing single trace to calculate data quality for
     :param filter_type: obspy filter type
     :param minimum_frequency: minimum frequency to use in filter
     :param maximum_frequency: maximum frequency to use in filter
     :param starttime: start time of data query, for FDSN completeness calculation, as ISO8601 string
     :param endtime: end time of data query, for FDSN completeness calculation, as ISO8601 string
-    :return: data RMS value, number of data values
+    :return: data RMS value
     """
 
     # Apply a filter to the data
@@ -48,45 +48,10 @@ def calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency
                            freqmin=minimum_frequency,
                            freqmax=maximum_frequency)
 
-    # Build probabilistic power spectral density objects for each trace
-    client = Client("https://service.geonet.org.nz")
-    try:
-        metadata = client.get_stations(network='NZ',
-                                       station=data.stats.station,
-                                       location=data.stats.location,
-                                       channel=data.stats.channel,
-                                       starttime=UTCDateTime(starttime),
-                                       endtime=UTCDateTime(endtime),
-                                       level='response')
-        ppsd = PPSD(data.stats, metadata)
-        ppsd.add(data)
-    except FDSNNoDataException:
-        # When no response data exists
-        return np.nan, np.nan
+    # Calculate RMS value
+    RMS = np.sqrt(np.mean(data.data**2))
 
-    # Find RMS value from PPSD.
-    # 1) Take the mean value of PPSD in given frequency window as the PSD value
-    # 2) Calculate weighted mean of PSD values in all windows using frequency window width as weights and scaling the
-    # acceleration squared values by the window centre frequency squared to convert the result into velocity squared.
-    # Also convert the data values out of dB scale as precursor to this.
-    # 3) Take sqrt of weighted mean, as data are squared when processed to produce PSD. This gives the RMS value.
-    weighted_mean, weight_sum = 0, 0
-
-    try:
-        _, mean_psds = ppsd.get_mean()
-    except Exception:
-        # Fails when no data exists
-        return np.nan, np.nan
-
-    psd_widths = [1/ppsd.period_bin_left_edges[n] - 1/ppsd.period_bin_right_edges[n]
-                  for n in range(len(ppsd.period_bin_left_edges))]
-    psd_centres = [1/ppsd.period_bin_centers[n] for n in range(len(ppsd.period_bin_centers))]
-    for n in range(len(mean_psds)):
-        weighted_mean += math.sqrt(10**(mean_psds[n] / 10) / (psd_centres[n] ** 2)) * psd_widths[n]
-        weight_sum += psd_widths[n]
-    weighted_mean /= weight_sum
-
-    return weighted_mean, ppsd
+    return RMS
 
 
 def query_fdsn(station, location, channel, starttime, endtime, client="https://service.geonet.org.nz"):
@@ -226,7 +191,7 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
 
     if data_source == 'FDSN':
 
-        mean_RMS, _ = calculate_PPSD_noise(data, filter_type, minimum_frequency, maximum_frequency, starttime, endtime)
+        mean_RMS, _ = calculate_noise(data, filter_type, minimum_frequency, maximum_frequency, starttime, endtime)
 
     elif data_source == 'S3':
 
@@ -238,13 +203,10 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
             data = read(file)
             # Iterative over data if there are gaps
             for data_chunk in data:
-                RMS, ppsd = calculate_PPSD_noise(data_chunk, filter_type, minimum_frequency, maximum_frequency,
-                                                 starttime, endtime)
-                if np.isnan(RMS):
-                    continue
+                RMS = calculate_noise(data_chunk, filter_type, minimum_frequency, maximum_frequency,
+                                      starttime, endtime)
                 RMSs.append(RMS)
-                chunk_st, chunk_et = ppsd.times_data[0]
-                times.append([chunk_st, chunk_et])
+                times.append([data_chunk.stats.starttime, data_chunk.stats.endtime])
             remove(file)
 
         if len(RMSs) == 0:
@@ -295,15 +257,13 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
 # in the data quality calculations. The station codes should be in the first column of this file, and the location
 # code can be in any other column so long as the file header specifies which by the location of the "Location" string
 # in the header.
-# site_file = '/home/samto/git/delta/network/sites.csv'
-site_file = './sites'
-# site_file = './sites.csv'
+site_file = '/home/samto/git/delta/network/sites.csv'
 
 # Give parameters for which data to query
 channel_codes = ['EHZ', 'HHZ']  # Channel code(s) to query, if only one is desired have a list with one entry
-starttime = '2019-03-06T00:00:00Z'  # starttime can either be an ISO8601 string, or an integer number of seconds to
+starttime = '2019-01-01T00:00:00Z'  # starttime can either be an ISO8601 string, or an integer number of seconds to
                                     # query data for before the endtime.
-endtime = '2020-12-31T00:00:01Z'  # endtime can be an ISO8601 string or 'now', if 'now' then endtime
+endtime = '2019-12-31T23:59:59Z'  # endtime can be an ISO8601 string or 'now', if 'now' then endtime
                                   # will be set to the current UTC time. If using S3 data_source, make endtime at least
                                   # 1 second into the final day of data you want to use.
 
@@ -408,54 +368,57 @@ with open('seismic_site_data_quality_summary.csv', 'w') as outfile:
                   'RMS\n')
 with open('seismic_site_data_quality_summary.csv', 'a') as outfile:
     # Load in input file and parse it into rows for each channel at each site
-    all_site_rows = [[[] for m in range(len(channel_codes))] for n in range(len(site_metadata))]
-    for n, site in enumerate(site_metadata.index):
-        for m, channel in enumerate(channel_codes):
-            with open('seismic_site_data_quality_output.csv', 'r') as infile:
-                for row in infile:
-                    cols = row.split(',')
-                    if cols[0] == site and cols[2] == channel:
-                        all_site_rows[n][m].append(row)
-        # Then, aggregate all the different rows into a summary row for each channel at each site. This collapses
-        # the data by time.
-        channel_rows = [[] for m in range(len(channel_codes))]
-        for site_rows in all_site_rows:
-            for channel_rows in site_rows:
+    all_site_rows = []
+    for n, site in enumerate(list(set(site_metadata.index))):
+        all_site_rows.append([])
+        for m, loc in enumerate(site_metadata.loc[site]['Location']):
+            all_site_rows[-1].append([])
+            for o, channel in enumerate(channel_codes):
+                all_site_rows[-1][-1].append([])
+                with open('seismic_site_data_quality_output.csv', 'r') as infile:
+                    for row in infile:
+                        cols = row.split(',')
+                        if cols[0] == site and cols[1] == loc and cols[2] == channel:
+                            all_site_rows[-1][-1][-1].append(row)
+    # Then, aggregate all the different rows into a summary row for each channel at each site. This collapses
+    # the data by time.
+    for site_rows in all_site_rows:
+        for loc_row in site_rows:
+            for channel_rows in loc_row:
                 try:
                     first_row = channel_rows[0].split(',')
                 except IndexError:
                     continue
+                mean_RMS = 0
+                mean_completeness = 0
+                numentries = 0
                 site = first_row[0]
                 location_code = first_row[1]
+                channel = first_row[2]
                 longitude = first_row[3]
                 latitude = first_row[4]
-                for channel in channel_codes:
-                    mean_RMS = 0
-                    mean_completeness = 0
-                    numentries = 0
-                    for row in channel_rows:
-                        cols = row.split(',')
-                        if cols[2] == channel:
-                            if cols[-1][:3] != 'nan':
-                                mean_RMS += float(cols[-1])
-                                mean_completeness += (datetime.datetime.strptime(cols[6][:19], '%Y-%m-%dT%H:%M:%S') -
-                                                      datetime.datetime.strptime(cols[5][:19], '%Y-%m-%dT%H:%M:%S')
-                                                      ).total_seconds()
-                                numentries += 1
-                    if numentries > 0:
-                        mean_RMS /= numentries
-                    else:
-                        mean_RMS = np.nan
-                    mean_completeness /= (endtime - starttime).total_seconds()
-                    outfile.write(site + ',' +
-                                  location_code + ',' +
-                                  channel + ',' +
-                                  longitude + ',' +
-                                  latitude + ',' +
-                                  starttime.isoformat() + ',' +
-                                  endtime.isoformat() + ',' +
-                                  filter_type + ',' +
-                                  str(minimum_frequency) + ',' +
-                                  str(maximum_frequency) + ',' +
-                                  str(mean_completeness) + ',' +
-                                  str(mean_RMS) + '\n')
+                for row in channel_rows:
+                    cols = row.split(',')
+                    if cols[-1][:3] != 'nan':
+                        mean_RMS += float(cols[-1])
+                        mean_completeness += (datetime.datetime.strptime(cols[6][:19], '%Y-%m-%dT%H:%M:%S') -
+                                              datetime.datetime.strptime(cols[5][:19], '%Y-%m-%dT%H:%M:%S')
+                                              ).total_seconds()
+                        numentries += 1
+                if numentries > 0:
+                    mean_RMS /= numentries
+                else:
+                    mean_RMS = np.nan
+                mean_completeness /= (endtime - starttime).total_seconds()
+                outfile.write(site + ',' +
+                              location_code + ',' +
+                              channel + ',' +
+                              longitude + ',' +
+                              latitude + ',' +
+                              starttime.isoformat() + ',' +
+                              endtime.isoformat() + ',' +
+                              filter_type + ',' +
+                              str(minimum_frequency) + ',' +
+                              str(maximum_frequency) + ',' +
+                              str(mean_completeness) + ',' +
+                              str(mean_RMS) + '\n')
