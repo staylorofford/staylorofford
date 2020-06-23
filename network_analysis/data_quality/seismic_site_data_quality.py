@@ -8,6 +8,7 @@ Note: while FDSN functionality was initially supported, further development has 
 
 # Import Python libraries
 import datetime
+import io
 import math
 import matplotlib.pyplot as plt
 import multiprocessing
@@ -16,10 +17,10 @@ from obspy.clients.fdsn import Client
 from obspy.clients.fdsn.header import FDSNNoDataException
 from obspy.core.stream import Stream
 from obspy.core.utcdatetime import UTCDateTime
-from obspy.signal import PPSD
 from obspy import read
 from os import remove
 import pandas as pd
+import pycurl
 
 
 # Import my Python functions
@@ -51,7 +52,28 @@ def calculate_noise(data, filter_type, minimum_frequency, maximum_frequency, sta
     # Calculate RMS value
     RMS = np.sqrt(np.mean(data.data**2))
 
-    return RMS
+    # Scale into nm/s
+    gain = float(query_gain(data.stats.station, data.stats.location, data.stats.channel, starttime, endtime))
+
+    return gain * RMS
+
+
+def curl(curlstr):
+
+    """
+    Perform curl with curlstr
+    :param curlstr: string to curl
+    :return: curl output
+    """
+
+    buffer = io.BytesIO()
+    c = pycurl.Curl()
+    c.setopt(c.URL, curlstr)
+    c.setopt(c.WRITEDATA, buffer)
+    c.perform()
+    c.close()
+
+    return buffer.getvalue()
 
 
 def query_fdsn(station, location, channel, starttime, endtime, client="https://service.geonet.org.nz"):
@@ -76,6 +98,33 @@ def query_fdsn(station, location, channel, starttime, endtime, client="https://s
                                   starttime=starttime,
                                   endtime=endtime)
     return stream
+
+
+def query_gain(station, location, channel, starttime, endtime):
+
+    """
+    Query FDSN for site metadata.
+    :param: station: site code to get data from (string)
+    :param: location: location code to get data from (string)
+    :param: channel: channel code to get data from (string)
+    :param: starttime: UTC start time of desired data (ISO8601 string)
+    :param: endtime: UTC end time of desired data (ISO8601 string)
+    :param: client: FDSN webservice to use as the client:
+            https://service.geonet.org.nz (archive) or https://service-nrt.geonet.org.nz (last week)
+    :return: gain value for site
+    """
+
+    query_string = 'https://service.geonet.org.nz/fdsnws/station/1/query?station=' + station + \
+                   '&location=' + str(location) + \
+                   '&channel=' + str(channel) + \
+                   '&starttime=' + starttime.isoformat() + \
+                   '&endtime=' + endtime.isoformat() + \
+                   '&level=channel'
+    curl_result = curl(query_string).decode('ascii')
+    sti = curl_result.find('<InstrumentSensitivity><Value>')
+    ste = curl_result.find('</Value>', sti)
+    gain = curl_result[sti + len('<InstrumentSensitivity><Value>'):ste]
+    return gain
 
 
 def data_quality(site_code, location_code, channel_code, latitude, longitude, starttime, endtime, splittime=None):
@@ -321,7 +370,7 @@ else:
 # Pump parameters into parallel processing pool and do data quality calculation
 
 # Prepare the workers for parallel processing
-pp_pool = multiprocessing.Pool(3)
+pp_pool = multiprocessing.Pool(25)
 
 jobs = []
 
