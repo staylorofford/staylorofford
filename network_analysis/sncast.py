@@ -36,8 +36,8 @@ import geopandas as gpd
 import pandas as pd
 
 
-def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.1,
-          dlat=0.1, stat_num=10, snr=10, foc_depth=5, region='CAL', mag_min=2.0, mag_delta=0.1):
+def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=1,
+          dlat=1, stat_num=10, snr=3, foc_depth=5, region='CAL', mag_min=1.0, mag_delta=1):
 
     """
     This routine calculates the geographic distribution of the minimum 
@@ -72,34 +72,26 @@ def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.
         a = -1.49
         b = -1.27E-3
         c = 0.29
-    elif region == 'UK':  # UK scale, Ottemöller and Sargeant (2013), BSSA, doi:10.1785/0120130085
-        a = 0.95
-        b = 0.00183
-        c = -1.76
-    elif region == 'CAL':  # South. California scale, IASPEI (2005),
-                           # www.iaspei.org/commissions/CSOI/summary_of_WG_recommendations_2005.pdf
-        a = 1.11
-        b = 0.00189
-        c = -2.09
 
-    # read in data, file format: "LON, LAT, NOISE [nm], STATION"
-    array_in = np.genfromtxt('%s/%s.dat' % (dir_in, filename), dtype=None, delimiter=",", filling_values=0)
-    lon = ([t[0] for t in array_in])
-    lat = [t[1] for t in array_in]
-    noise = [t[2] for t in array_in]
-    stat = [t[3] for t in array_in]
-    corr = [t[4] for t in array_in]
+    # read in data, file format:
+    array_in = np.genfromtxt('%s%s' % (dir_in, filename), dtype=None, delimiter=",", filling_values=0, skip_header=1)
+    lon = ([t[3] for t in array_in])
+    lat = [t[4] for t in array_in]
+    noise = [t[11] for t in array_in]
+    stat = [t[0] for t in array_in]
+    corr = [t[12] for t in array_in]
     # grid size
     nx = int((lon1 - lon0) / dlon) + 1
     ny = int((lat1 - lat0) / dlat) + 1
     # open output file:
-    f = open('%s/%s-stat%s-foc%s-snr%s-%s.grd' %(dir_in,
-                                                 filename,
-                                                 stat_num,
-                                                 foc_depth,
-                                                 snr,
-                                                 region), 'wb')
+    f = open('%s%s-stat%s-foc%s-snr%s-%s.grd' %(dir_in,
+                                                filename,
+                                                stat_num,
+                                                foc_depth,
+                                                snr,
+                                                region), 'wb')
     mag = []
+    import re
     for ix in range(nx):  # Loop through longitude increments
         ilon = lon0 + ix * dlon
         for iy in range(ny):  # Loop through latitude increments
@@ -115,9 +107,12 @@ def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.
                 ampl = 0.0
                 m = mag_min - mag_delta
                 while ampl < snr * noise[j]:
-                    m = m + mag_delta
-                    #ampl = pow(10, (m - a * log10(hypo_dist) - b * hypo_dist - c ))
-                    ampl = pow(10, (m - a * log10(hypo_dist) - b * hypo_dist - c - corr[j]))
+                    corr[j] = re.sub('−', "-", corr[j])  # Replace hyphen minus signs with parsable negatives
+                    m += mag_delta
+                    ampl = pow(10, (m - a * log10(hypo_dist) - b * hypo_dist - c - float(corr[j])))
+                    print(m)
+                    print(ampl)
+                    print(snr * noise[j])
                 mag.append(m)
                 j = j + 1   
             # Sort magnitudes in ascending order
@@ -138,6 +133,9 @@ def PlotminML(filename):
     x = DAT.iloc[:, 0].values
     y = DAT.iloc[:, 1].values
     z = DAT.iloc[:, 2].values
+    for i in range(len(x)):  # Force all longitudes between 0 and 360
+        if x[i] < 0:
+            x[i] += 360
 
     def plot_contour(x, y, z, resolution=50, contour_method='linear'):
 
@@ -153,7 +151,7 @@ def PlotminML(filename):
     fig, ax = plt.subplots(figsize=(13, 8))
     cm = plt.cm.get_cmap('inferno_r')
     mesh = ax.pcolormesh(X, Y, Z, cmap=cm, zorder=1)
-    CS = ax.contour(X, Y, Z, levels=[2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5], linewidths=1)
+    CS = ax.contour(X, Y, Z, linewidths=1)
     ax.clabel(CS, inline=1, fontsize=10)
     ax.grid(color='k', alpha=0.2, zorder=2)
     cb = fig.colorbar(mesh)
@@ -163,17 +161,16 @@ def PlotminML(filename):
 
 
 # Calculate SN-CAST data
-# minML('NZ_stations', foc_depth=5)
-minML('NZ_CorrStation', foc_depth=5)
+minML('datain.csv', foc_depth=5, region='NZ')
 
 # Plot SN-CAST data
-fig, ax = PlotminML('NZ_CorrStation-stat10-foc5-snr10-CAL.grd')
+fig, ax = PlotminML('datain.csv-stat10-foc5-snr3-NZ.grd')
+
 # Plot reference data
-#station_metadata = pd.read_csv('NZ_stations.dat', header=None)
-station_metadata = pd.read_csv('NZ_CorrStation.dat', header=None)
-#station_metadata.columns = ['Longitude', 'Latitude', 'Noise', 'Station']
-station_metadata.columns = ['Longitude', 'Latitude', 'Noise', 'Station', 'MLr_Corr']
-outlines = gpd.read_file('nz-coastlines-and-islands-polygons-topo-150k.shp')
+station_metadata = pd.read_csv('datain.csv', header=1)
+station_metadata.columns = ['Station', 'Location', 'Channel', 'Longitude', 'Latitude', 'Starttime', 'Endtime', 'Filter',
+                            'Freqmin', 'Freqmax', 'Completeness', 'RMS', 'MLR Correction']
+outlines = gpd.read_file('./shapefiles/nz-coastlines-and-islands-polygons-topo-150k.shp')
 outlines.boundary.plot(color=None, edgecolor='k', ax=ax, linewidth=1, zorder=3)  # Plot NZ outline
 ax.scatter(station_metadata['Longitude'],
            station_metadata['Latitude'],
@@ -188,4 +185,4 @@ plt.ylabel('latitude', rotation=90, labelpad=10, fontsize=12)
 plt.title('SN-CAST: theoretical lowest magnitude of detection in New Zealand,\n' +
           'focal depth: 5 km, number of detections: 10, SNR for detection: 3',
           y=1.03)
-plt.show()
+plt.savefig('sncast.png', dpi=300)
