@@ -49,21 +49,22 @@ def calculate_noise(data, filter_type, minimum_frequency, maximum_frequency, sta
                            freqmin=minimum_frequency,
                            freqmax=maximum_frequency)
 
-    # Calculate RMS value
-    RMS = np.sqrt(np.mean(data.data**2))
-
-    # Scale into nm/s
+    # Scale data into nm/s
     gain = query_gain(data.stats.station, data.stats.location, data.stats.channel, starttime, endtime)
     try:
         gain = float(gain)
+        data.data = gain * data.data
+
+        # Calculate RMS value
+        RMS = np.sqrt(np.mean(data.data ** 2))
+
     except ValueError:
         print('Failed to find sensor gain from FDSN! No scaling will be applied to RMS value for station ' +
               data.stats.station + ', location ' + data.stats.location + ', channel ' + data.stats.channel +
               ', times ' + starttime.isoformat() + '-' + endtime.isoformat() + '. Will return NaN value for RMS.')
-        gain = 1
         RMS = np.nan
 
-    return gain * RMS
+    return RMS
 
 
 def curl(curlstr):
