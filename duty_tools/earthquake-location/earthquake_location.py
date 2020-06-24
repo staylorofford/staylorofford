@@ -33,7 +33,9 @@ def parse_files(arrival_time_file=None,
                 velocity_model=None,
                 grid_parameters=None,
                 grid_file=None,
-                mode=None):
+                mode=None,
+                event_service='https://service.geonet.org.nz/fdsnws/event/1/',
+                station_service='https://service.geonet.org.nz/fdsnws/station/1/'):
 
     """
     Parse parameters from files as described in the main execution of this code.
@@ -53,7 +55,12 @@ def parse_files(arrival_time_file=None,
                     eventIDs.append(row[:-1])
 
         # Build the arrival time and network data lists using FDSN queries and the eventIDs
-        all_event_origins, arrival_time_data_header, arrival_time_data, network_data = get_origins(eventIDs)
+        all_event_origins, arrival_time_data_header, arrival_time_data, network_data = get_origins(eventIDs,
+                                                                                                   event_service,
+                                                                                                   station_service)
+        if len(all_event_origins) == 0:
+            # There is no data, return empty lists.
+            return [], [], [], [], []
 
     # Otherwise, generate the arrival time and network data lists from the respective files
     else:
@@ -259,7 +266,7 @@ def curl(curlstr):
     return buffer.getvalue()
 
 
-def FDSN_event_query(eventID):
+def FDSN_event_query(eventID, service):
 
     """
     Use obspy with pycurl to query event details via FDSN..
@@ -268,14 +275,14 @@ def FDSN_event_query(eventID):
     :return: obspy object containing earthquake details
     """
 
-    query = 'https://service.geonet.org.nz/fdsnws/event/1/query?eventid=' + eventID
+    query = service + 'query?eventid=' + eventID
     queryresult = curl(query)
     event_details = quakeml_reader.loads(queryresult)
 
     return event_details
 
 
-def FDSN_station_query(station):
+def FDSN_station_query(station, service):
 
     """
     Use pycurl to query station details via FDSN.
@@ -285,7 +292,7 @@ def FDSN_station_query(station):
     """
 
     # Query station information
-    query = 'https://service.geonet.org.nz/fdsnws/station/1/query?station=' + station
+    query = service + 'query?station=' + station
     queryresult = curl(query)
 
     # Parse station information
@@ -319,7 +326,7 @@ def GeoNet_delta_station_query(station):
     return latitude, longitude, depth
 
 
-def get_origins(eventIDs):
+def get_origins(eventIDs, event_service, station_service):
 
     """
     Get origin parameters for all earthquakes with eventID in eventIDs.
@@ -332,10 +339,14 @@ def get_origins(eventIDs):
     all_event_origins = []
     all_event_ATDHs = []
     all_event_ATDs = []
+    network_data = []
     for eventID in eventIDs:
 
         # Get event details
-        event = FDSN_event_query(eventID)[0]
+        try:
+            event = FDSN_event_query(eventID, event_service)[0]
+        except:
+            continue
 
         # Get origin and picks
         origin = event.origins[0]
@@ -390,7 +401,6 @@ def get_origins(eventIDs):
                 arrival_time_data[m][idx] = float('nan')
 
     # Build network data using site list and FDSN
-    network_data = []
     sites = []
     found = []
     for n in range(len(arrival_time_data_header)):
@@ -405,7 +415,7 @@ def get_origins(eventIDs):
         network_data.append([])
         # Search the GeoNet FDSN database for the station location
         try:
-            latitude, longitude, depth = FDSN_station_query(site)
+            latitude, longitude, depth = FDSN_station_query(site, station_service)
         except:
             # If this fails, search the GeoNet delta database for the station location
             try:
@@ -832,12 +842,16 @@ def test_test_origins(method, arrival_time_data, arrival_time_data_header, grid_
 
     earthquake_origins, rms_errors = [], []
     for n in range(len(test_origins)):
-        earthquake_origins.append(globals()[method]([arrival_time_data[n]],
-                                                    arrival_time_data_header,
-                                                    [[[grid_points[n][n][n]]]],
-                                                    grid_header))
+        try:
+            earthquake_origins.append(globals()[method]([arrival_time_data[n]],
+                                                        arrival_time_data_header,
+                                                        [[[grid_points[n][n][n]]]],
+                                                        grid_header))
+        except IndexError:
+            pass  # There is no arrival time data. Passing allows the following try... except... clauses to produce
+            # 'nan' values.
 
-        # Calculate RMS error as the time difference between the test origin time and that from the grid search
+            # Calculate RMS error as the time difference between the test origin time and that from the grid search
         try:
             rms_errors.append(abs((datetime.datetime.strptime(test_origins[n][0],
                                                               '%Y-%m-%dT%H:%M:%S.%fZ') -
