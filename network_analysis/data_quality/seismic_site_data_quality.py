@@ -53,7 +53,15 @@ def calculate_noise(data, filter_type, minimum_frequency, maximum_frequency, sta
     RMS = np.sqrt(np.mean(data.data**2))
 
     # Scale into nm/s
-    gain = float(query_gain(data.stats.station, data.stats.location, data.stats.channel, starttime, endtime))
+    gain = query_gain(data.stats.station, data.stats.location, data.stats.channel, starttime, endtime)
+    try:
+        gain = float(gain)
+    except ValueError:
+        print('Failed to find sensor gain from FDSN! No scaling will be applied to RMS value for station ' +
+              data.stats.station + ', location ' + data.stats.location + ', channel ' + data.stats.channel +
+              ', times ' + starttime.isoformat() + '-' + endtime.isoformat() + '. Will return NaN value for RMS.')
+        gain = 1
+        RMS = np.nan
 
     return gain * RMS
 
@@ -213,7 +221,6 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
                       filter_type + ',' +
                       str(minimum_frequency) + ',' +
                       str(maximum_frequency) + ',' +
-                      'NA' + ',' +
                       str(np.nan) + '\n')
             return outstr
 
@@ -273,7 +280,6 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
                       filter_type + ',' +
                       str(minimum_frequency) + ',' +
                       str(maximum_frequency) + ',' +
-                      '0' + ',' +
                       str(np.nan) + '\n')
             return outstr
 
@@ -417,57 +423,37 @@ with open('seismic_site_data_quality_summary.csv', 'w') as outfile:
                   'RMS\n')
 with open('seismic_site_data_quality_summary.csv', 'a') as outfile:
     # Load in input file and parse it into rows for each channel at each site
-    all_site_rows = []
-    for n, site in enumerate(list(set(site_metadata.index))):
-        all_site_rows.append([])
-        for m, loc in enumerate(site_metadata.loc[site]['Location']):
-            all_site_rows[-1].append([])
-            for o, channel in enumerate(channel_codes):
-                all_site_rows[-1][-1].append([])
-                with open('seismic_site_data_quality_output.csv', 'r') as infile:
-                    for row in infile:
-                        cols = row.split(',')
-                        if cols[0] == site and cols[1] == loc and cols[2] == channel:
-                            all_site_rows[-1][-1][-1].append(row)
-    # Then, aggregate all the different rows into a summary row for each channel at each site. This collapses
-    # the data by time.
-    for site_rows in all_site_rows:
-        for loc_row in site_rows:
-            for channel_rows in loc_row:
-                try:
-                    first_row = channel_rows[0].split(',')
-                except IndexError:
-                    continue
-                mean_RMS = 0
-                mean_completeness = 0
-                numentries = 0
-                site = first_row[0]
-                location_code = first_row[1]
-                channel = first_row[2]
-                longitude = first_row[3]
-                latitude = first_row[4]
-                for row in channel_rows:
-                    cols = row.split(',')
-                    if cols[-1][:3] != 'nan':
-                        mean_RMS += float(cols[-1])
-                        mean_completeness += (datetime.datetime.strptime(cols[6][:19], '%Y-%m-%dT%H:%M:%S') -
-                                              datetime.datetime.strptime(cols[5][:19], '%Y-%m-%dT%H:%M:%S')
-                                              ).total_seconds()
-                        numentries += 1
-                if numentries > 0:
-                    mean_RMS /= numentries
-                else:
-                    mean_RMS = np.nan
-                mean_completeness /= (endtime - starttime).total_seconds()
-                outfile.write(site + ',' +
-                              location_code + ',' +
-                              channel + ',' +
-                              longitude + ',' +
-                              latitude + ',' +
-                              starttime.isoformat() + ',' +
-                              endtime.isoformat() + ',' +
-                              filter_type + ',' +
-                              str(minimum_frequency) + ',' +
-                              str(maximum_frequency) + ',' +
-                              str(mean_completeness) + ',' +
-                              str(mean_RMS) + '\n')
+    entries = []
+    with open('seismic_site_data_quality_output.csv', 'r') as infile:
+        for row in infile:
+            if ',nan' not in row and 'Station' not in row:
+                cols = row.split(',')
+                entries.append(cols[0] + ',' + cols[1] + ',' + cols[2] + ',' + cols[3] + ',' + cols[4])
+        entries = list(set(entries))
+        completenesses = [0] * len(entries)
+        RMSs = [0] * len(entries)
+        numentries = [0] * len(entries)
+    with open('seismic_site_data_quality_output.csv', 'r') as infile:
+        for row in infile:
+            if ',nan' not in row and 'Station' not in row:
+                cols = row.split(',')
+                idx = entries.index(cols[0] + ',' + cols[1] + ',' + cols[2] + ',' + cols[3] + ',' + cols[4])
+                completenesses[idx] += (datetime.datetime.strptime(cols[6][:19], '%Y-%m-%dT%H:%M:%S') -
+                                        datetime.datetime.strptime(cols[5][:19], '%Y-%m-%dT%H:%M:%S')
+                                        ).total_seconds()
+                RMSs[idx] += float(cols[-1])
+                numentries[idx] += 1
+        for n in range(len(entries)):
+            completenesses[n] /= (endtime - starttime).total_seconds()
+            if numentries[n] > 0:
+                RMSs[n] /= numentries[n]
+            else:
+                RMSs[n] = np.nan
+            outfile.write(entries[n] + ',' +
+                          starttime.isoformat() + ',' +
+                          endtime.isoformat() + ',' +
+                          filter_type + ',' +
+                          str(minimum_frequency) + ',' +
+                          str(maximum_frequency) + ',' +
+                          str(completenesses[n]) + ',' +
+                          str(RMSs[n]) + '\n')
