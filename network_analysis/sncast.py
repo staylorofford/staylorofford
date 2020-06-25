@@ -36,8 +36,8 @@ import geopandas as gpd
 import pandas as pd
 
 
-def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.1,
-          dlat=0.1, stat_num=10, snr=10, foc_depth=5, region='CAL', mag_min=2.0, mag_delta=0.1):
+def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.05,
+          dlat=0.05, stat_num=10, snr=3, foc_depth=5, mag_min=2.0, mag_delta=0.01):
 
     """
     This routine calculates the geographic distribution of the minimum 
@@ -67,12 +67,6 @@ def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.
     :param  mag_delta:  ML increment used in grid search
     """
 
-    # region specific ML = log(ampl) + a*log(hypo-dist) + b*hypo_dist + c
-    if region == 'NZ':  # Ristau magnitude
-        a = -1.49
-        b = -1.27E-3
-        c = 0.29
-
     # read in data, file format:
     array_in = np.genfromtxt('%s%s' % (dir_in, filename), dtype=None, delimiter=",", filling_values=0, skip_header=1)
     lon = ([t[3] for t in array_in])
@@ -86,12 +80,11 @@ def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.
     ny = int((lat1 - lat0) / dlat) + 1
     # open output file:
 
-    f = open('%s%s-stat%s-foc%s-snr%s-%s.grd' %(dir_in,
+    f = open('%s%s-stat%s-foc%s-snr%s.grd' %(dir_in,
                                                 filename,
                                                 stat_num,
                                                 foc_depth,
-                                                snr,
-                                                region), 'wb')
+                                                snr), 'wb')
     mag = []
     import re
     for ix in range(nx):  # Loop through longitude increments
@@ -108,13 +101,11 @@ def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.
                 # Find smallest detectable magnitude
                 ampl = 0.0
                 m = mag_min - mag_delta
-                while ampl < snr * noise[j]:
+                while ampl < (snr * noise[j]) / 1E6:  # Scale signal into mm/s: same as magnitude scale uses
                     corr[j] = re.sub('−', "-", corr[j])  # Replace hyphen minus signs with parsable negatives
                     m += mag_delta
-                    ampl = pow(10, (m - a * log10(hypo_dist) - b * hypo_dist - c - float(corr[j])))
-                    print(m)
-                    print(ampl)
-                    print(snr * noise[j])
+                    # Hardcode MLR into amplitude calculation
+                    ampl = 10 ** (m - 1.49 * log10(hypo_dist) - 1.27 * (10 ** (-3)) * hypo_dist + 0.29 + float(corr[j]))
                 mag.append(m)
                 j = j + 1   
             # Sort magnitudes in ascending order
@@ -135,6 +126,10 @@ def PlotminML(filename):
     x = DAT.iloc[:, 0].values
     y = DAT.iloc[:, 1].values
     z = DAT.iloc[:, 2].values
+    # DAT = pd.read_csv(filename, sep=",", header=1)
+    # x = DAT.iloc[:, 3].values
+    # y = DAT.iloc[:, 4].values
+    # z = DAT.iloc[:, -2].values
     for i in range(len(x)):  # Force all longitudes between 0 and 360
         if x[i] < 0:
             x[i] += 360
@@ -148,25 +143,37 @@ def PlotminML(filename):
 
        return X, Y, Z
 
-    X, Y, Z = plot_contour(x, y, z, resolution=50, contour_method='linear')
+    X, Y, Z = plot_contour(x, y, z, resolution=1000, contour_method='linear')
 
     fig, ax = plt.subplots(figsize=(13, 8))
     cm = plt.cm.get_cmap('inferno_r')
+    # cm = plt.cm.get_cmap('inferno')
+
+    # zmax= max(z)
+    # colors = []
+    # for n in range(len(z)):
+    #     z[n] /= zmax
+    #     colors.append(cm(z[n]))
+    # plt.scatter(x, y, c=colors, cmap=cm, edgecolors='white', linewidths=0.2,
+    #             s=10, alpha=0.8, zorder=4)
+
     mesh = ax.pcolormesh(X, Y, Z, cmap=cm, zorder=1)
     CS = ax.contour(X, Y, Z, linewidths=1)
     ax.clabel(CS, inline=1, fontsize=10)
     ax.grid(color='k', alpha=0.2, zorder=2)
     cb = fig.colorbar(mesh)
     cb.set_label('magnitude', labelpad=15, fontsize=12, rotation=270)
+    # cb.set_label('RMS (nm/s)', labelpad=15, fontsize=12, rotation=270)
 
     return fig, ax
 
 
 # Calculate SN-CAST data
-minML('datain.csv', foc_depth=5, region='NZ')
+minML('datain.csv', foc_depth=5)
 
 # Plot SN-CAST data
-fig, ax = PlotminML('datain.csv-stat10-foc5-snr3-NZ.grd')
+fig, ax = PlotminML('datain.csv-stat10-foc5-snr3.grd')
+# fig, ax = PlotminML('datain.csv')
 
 # Plot reference data
 station_metadata = pd.read_csv('datain.csv', header=1)
@@ -174,11 +181,15 @@ station_metadata.columns = ['Station', 'Location', 'Channel', 'Longitude', 'Lati
                             'Freqmin', 'Freqmax', 'Completeness', 'RMS', 'MLR Correction']
 outlines = gpd.read_file('./shapefiles/nz-coastlines-and-islands-polygons-topo-150k.shp')
 outlines.boundary.plot(color=None, edgecolor='k', ax=ax, linewidth=1, zorder=3)  # Plot NZ outline
+for data in station_metadata['Longitude']:
+    if data < 0:
+        data += 360
 ax.scatter(station_metadata['Longitude'],
            station_metadata['Latitude'],
-           color='white',
+           facecolors='white',
            edgecolors='black',
-           alpha=0.8,
+           linewidth=1,
+           alpha=0.6,
            zorder=4)  # Plot station positions
 plt.xlim([165, 185])
 plt.ylim([-50, -30])
