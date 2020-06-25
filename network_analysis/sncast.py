@@ -36,8 +36,8 @@ import geopandas as gpd
 import pandas as pd
 
 
-def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=0.05,
-          dlat=0.05, stat_num=10, snr=3, foc_depth=5, mag_min=2.0, mag_delta=0.01):
+def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=1,
+          dlat=1, stat_num=10, snr=3, foc_depth=10, mag_min=2.0, mag_delta=0.1):
 
     """
     This routine calculates the geographic distribution of the minimum 
@@ -169,10 +169,10 @@ def PlotminML(filename):
 
 
 # Calculate SN-CAST data
-minML('datain.csv', foc_depth=5)
+minML('datain.csv', foc_depth=10)
 
 # Plot SN-CAST data
-fig, ax = PlotminML('datain.csv-stat10-foc5-snr3.grd')
+fig, ax = PlotminML('datain.csv-stat10-foc10-snr3.grd')
 # fig, ax = PlotminML('datain.csv')
 
 # Plot reference data
@@ -181,9 +181,10 @@ station_metadata.columns = ['Station', 'Location', 'Channel', 'Longitude', 'Lati
                             'Freqmin', 'Freqmax', 'Completeness', 'RMS', 'MLR Correction']
 outlines = gpd.read_file('./shapefiles/nz-coastlines-and-islands-polygons-topo-150k.shp')
 outlines.boundary.plot(color=None, edgecolor='k', ax=ax, linewidth=1, zorder=3)  # Plot NZ outline
-for data in station_metadata['Longitude']:
-    if data < 0:
-        data += 360
+pd.set_option('display.max_rows', None)
+for n in range(len(station_metadata['Longitude'])):
+    if station_metadata['Longitude'][n] < 0:
+        station_metadata['Longitude'][n] += 360
 ax.scatter(station_metadata['Longitude'],
            station_metadata['Latitude'],
            facecolors='white',
