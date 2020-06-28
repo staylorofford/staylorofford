@@ -5,7 +5,6 @@ Query timeseries data from FDSN and perform analysis and plotting on it.
 import datetime
 import obspy
 from obspy.clients.fdsn import Client
-import math
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -20,7 +19,7 @@ def query_fdsn(station, location, channel, starttime, endtime):
     :param: endtime: UTC end time of desired data (ISO8601 string)
     :return: obspy stream object containing requested data
     """
-    client = Client("https://service.geonet.org.nz")
+    client = Client("https://service-nrt.geonet.org.nz")
     stream = client.get_waveforms(network='NZ',
                                   station=station,
                                   channel=channel,
@@ -31,12 +30,12 @@ def query_fdsn(station, location, channel, starttime, endtime):
 
 
 # Set parameters for which data to analyse using lists of strings
-stations = ['KHZ', 'WEL', 'GVZ', 'MQZ',  'THZ', 'NNZ', 'INZ']
+stations = ['RLNS']
 locations = ['??']
-channels = ['HHZ']
-starttime = '2017-02-01T10:21:30Z'
-endtime = '2017-02-01T10:23:00Z'
-window_length = 91  # Window length to plot in seconds
+channels = ['HNZ']
+starttime = '2020-06-24T22:20:01Z'
+endtime = '2020-06-24T22:21:01Z'
+window_length = 61  # Window length to plot in seconds
 
 # Set how to filter the data, if at all. Use filter_type=None to negate filtering. Filter types are those in obspy.
 filter_type = 'bandpass'
@@ -67,8 +66,8 @@ end_time_dt = datetime.datetime.strptime(endtime,
 while current_time_dt <= end_time_dt:
 
     # Set windowing
-    window_start = current_time_dt.isoformat()
-    window_end = (current_time_dt + datetime.timedelta(seconds=window_length)).isoformat()
+    window_start = current_time_dt
+    window_end = (current_time_dt + datetime.timedelta(seconds=window_length))
 
     # Define minor axis
     minor_axis_ticks = []
@@ -85,8 +84,8 @@ while current_time_dt <= end_time_dt:
                 query_stream = query_fdsn(station,
                                           location,
                                           channel,
-                                          window_start,
-                                          window_end)
+                                          obspy.UTCDateTime(window_start),
+                                          obspy.UTCDateTime(window_end))
             stream += query_stream
 
     # Filter the data as desired
