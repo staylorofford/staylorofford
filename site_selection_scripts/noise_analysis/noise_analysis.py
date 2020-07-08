@@ -4,6 +4,7 @@ Combine local data from test sites [to do: with data from a reference site (quer
 and perform noise analysis and plotting on it.
 """
 
+import matplotlib.pyplot as plt
 import os
 import obspy
 from obspy.core.stream import Stream
@@ -13,11 +14,11 @@ from obspy.signal import PPSD
 
 # Define root data directory
 
-day_file_directory_root = '/mnt/hgfs/VMSHARE/KUZ testing/'
+day_file_directory_root = '/mnt/hgfs/VMSHARE/CLRR_XX/'
 
 # Define sensor + datalogger metadata (dataless SEED) directory
 
-metadata_directory = '/home/samto/git/staylorofford/site_selection/site_selection_scripts/metadata/'
+metadata_directory = '/home/samto/git/staylorofford/site_selection_scripts/metadata/'
 
 # Find all miniseed files under the root data directory into lists split by site
 print('Finding all miniSEED files in the root directory...')
@@ -45,9 +46,15 @@ for m, site in enumerate(sites):
     for n, channel in enumerate(channels):
         streams = Stream()
         for o in range(len(split_files[m][n])):
+            # Save daily data as dayplot
             print('Parsing file:')
             print(split_files[m][n][o])
-            streams += obspy.read(split_files[m][n][o])
+
+            day_stream = obspy.read(split_files[m][n][o])
+            day_stream.plot(type='dayplot', color='k', size=(1200, 800),
+                            outfile=site + '_' + channel + '_' + day_stream[0].stats.starttime.isoformat()[:10])
+
+            streams += day_stream
         print('Merging streams...')
         streams.merge()
         print('Current data is:')
@@ -78,8 +85,6 @@ for m, site in enumerate(sites):
                               cmap=pqlx,
                               filename=all_ppsd_names[n] + '.png',
                               show=False)
-            all_ppsds[n].plot_temporal(filename=all_ppsd_names[n] + '_temporal_fbands.png',
-                                       show=False)
             all_ppsds[n].plot_spectrogram(filename=all_ppsd_names[n] + '_spectrogram.png',
                                           show=False)
             all_ppsds[n].save_npz(all_ppsd_names[n])
