@@ -72,17 +72,18 @@ def FDSN_event_query(eventID):
 
 
 # Give eventID to analyse
-eventID = '2020p391429'
+eventID = '2020p225628'
 
 # Set parameters for which data to collect from FDSN
-stations = ['INSS']
-locations = ['20']
-channels = ['HNZ']  # the same channels will be loaded for test sites
+stations = ['CRSZ']
+locations = ['10']
+channels = ['EHN', 'EHE', 'EHZ']
 
 # Set parameters for where to find test site data
-test_data_dir = '/home/samto/PROCESSING/2020/'  # root directory under which all test data exists
-test_sites = ['TES1', 'TES2', 'TES3', 'TES3', 'TES4']
-location_codes = ['20', '20', '20', '21', '20']  # corresponding to respective site codes
+test_data_dir = '/mnt/hgfs/VMSHARE/CLRR_XX/'  # root directory under which all test data exists
+test_sites = ['T704', 'T736', 'T743', 'T1630']
+location_codes = ['10', '10', '10', '10']  # corresponding to respective site codes
+channel_codes = ['EHN', 'EHE', 'EHZ']  # "
 
 # Set how to filter the data, if at all. Use filter_type=None to negate filtering. Filter types are those in obspy.
 filter_type = None
@@ -102,7 +103,7 @@ reference_times = None
 
 # Query event start time from FDSN
 start_time = FDSN_event_query(eventID)[0].origins[0].time + 0
-end_time = start_time + 50
+end_time = start_time + 20
 
 # Format reference time
 if reference_times:
@@ -136,15 +137,16 @@ loaded_files = []
 for root, dirs, files in os.walk(test_data_dir):
     for file in files:
         for n in range(len(test_sites)):
-            for doy in data_doys:
-                if test_sites[n] in file and location_codes[n] in file and channel in file and str(doy) in file and \
-                        file not in loaded_files:
-                    loaded_data = obspy.read(root + '/' + file)
-                    if loaded_data[0].stats.starttime <= start_time and loaded_data[0].stats.endtime >= end_time:
-                        loaded_data.merge(method=1,
-                                          fill_value='interpolate')  # Ensure loaded data is in a single stream
-                        test_data += loaded_data
-                        loaded_files.append(file)
+            for channel in channel_codes:
+                for doy in data_doys:
+                    if test_sites[n] in file and location_codes[n] in file and channel in file and str(doy) in file and \
+                            file not in loaded_files:
+                        loaded_data = obspy.read(root + '/' + file)
+                        if loaded_data[0].stats.starttime <= start_time and loaded_data[0].stats.endtime >= end_time:
+                            loaded_data.merge(method=1,
+                                              fill_value='interpolate')  # Ensure loaded data is in a single stream
+                            test_data += loaded_data
+                            loaded_files.append(file)
 
 # Trim local data to event period
 test_data.trim(starttime=start_time,
@@ -163,8 +165,6 @@ if filter_type:
                            zerophase=True)
     stream.trim(starttime=start_time,
                 endtime=end_time)
-
-stream.plot()
 
 # Find min/max values of each trace
 min_max_values = [[0] * len(stream),
@@ -221,8 +221,8 @@ for n in range(len(fig.axes)):
     plotting_stream = axis.texts[0]._text
     if not spectrogram:
         min_max_index = min_max_values[4].index(plotting_stream)
-        axis.set_ylim(min_max_values[2][min_max_index] - min_max_values[2][min_max_index] / 10,
-                      min_max_values[3][min_max_index] + min_max_values[3][min_max_index] / 10)
+        axis.set_ylim(min_max_values[2][min_max_index],# - min_max_values[2][min_max_index] / 10,
+                      min_max_values[3][min_max_index])# + min_max_values[3][min_max_index] / 10)
         axis.locator_params(axis='y',
                             nbins=3)
         if reference_times:
@@ -248,4 +248,3 @@ if not filter_type:
 plt.savefig(
     eventID + '_' + filter_type + '_filter_' + str(minimum_frequency) + '-' + str(maximum_frequency) + '_Hz' + '.png',
     dpi=300)
-plt.show()
