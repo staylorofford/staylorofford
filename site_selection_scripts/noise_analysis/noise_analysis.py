@@ -14,11 +14,11 @@ from obspy.signal import PPSD
 
 # Define root data directory
 
-day_file_directory_root = '/mnt/hgfs/VMSHARE/CLRR_XX/'
+day_file_directory_root = '/mnt/hgfs/VMSHARE/KUZ testing/KUZ/'
 
 # Define sensor + datalogger metadata (dataless SEED) directory
 
-metadata_directory = '/home/samto/git/staylorofford/site_selection_scripts/metadata/'
+metadata_directory = '/mnt/hgfs/VMSHARE/KUZ testing/KUZ/'
 
 # Find all miniseed files under the root data directory into lists split by site
 print('Finding all miniSEED files in the root directory...')
@@ -27,17 +27,20 @@ channels = []
 all_files = []
 for root, dirs, files in os.walk(day_file_directory_root):
     for file in files:
-        if file[-3:] == '.ms':
-            sites.append(file.split('.')[0])
-            channels.append(file.split('.')[2][-3:])
+        try:
+            st = obspy.read(root + '/' + file)
+            sites.append(st[0].stats.station)
+            channels.append(st[0].stats.channel)
             all_files.append(root + '/' + file)
+        except:
+            continue
 sites = list(set(sites))  # Define site list
 channels = list(set(channels))  # Define channel list
 split_files = [[[] for n in range(len(channels))] for m in range(len(sites))]
 for file in all_files:
-    print(file)
-    site_idx = sites.index(file.split('/')[-1].split('.')[0])
-    channel_idx = channels.index(file.split('/')[-1].split('.')[2][-3:])
+    st = obspy.read(file)
+    site_idx = sites.index(st[0].stats.station)
+    channel_idx = channels.index(st[0].stats.channel)
     split_files[site_idx][channel_idx].append(file)
 
 # Load in data for each site and perform noise analysis
@@ -51,7 +54,7 @@ for m, site in enumerate(sites):
             print(split_files[m][n][o])
 
             day_stream = obspy.read(split_files[m][n][o])
-            day_stream.plot(type='dayplot', color='k', size=(1200, 800),
+            day_stream.plot(type='dayplot', size=(1200, 800),
                             outfile=site + '_' + channel + '_' + day_stream[0].stats.starttime.isoformat()[:10])
 
             streams += day_stream
