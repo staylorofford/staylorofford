@@ -61,7 +61,8 @@ for m, site in enumerate(sites):
 
                 day_stream = obspy.read(split_files[m][n][o][p])
                 day_stream.plot(type='dayplot', size=(1200, 800),
-                                outfile=site + '_' + channel + '_' + day_stream[0].stats.starttime.isoformat()[:10])
+                                outfile=site + '_' + location + '_' + channel + '_' +
+                                        day_stream[0].stats.starttime.isoformat()[:10])
 
                 streams += day_stream
             if len(streams) == 0:
@@ -95,7 +96,8 @@ for m, site in enumerate(sites):
 
                 ppsd.add(stream)
                 ppsds.append(ppsd)
-                ppsd_names.append(stream.stats.station + '_' + stream.stats.channel + '_PPSD')
+                ppsd_names.append(stream.stats.station + '_' + stream.stats.location + '_' + stream.stats.channel +
+                                  '_PPSD')
             all_ppsds.extend(ppsds)
             all_ppsd_names.extend(ppsd_names)
 
