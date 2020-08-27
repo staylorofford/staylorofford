@@ -11,6 +11,7 @@ import fnmatch
 import io
 import math
 import matplotlib.pyplot as plt
+import multiprocessing
 import numpy as np
 import numpy.ma as ma
 import obspy
@@ -20,7 +21,6 @@ from obspy.io.quakeml.core import Unpickler
 from obspy.core.utcdatetime import UTCDateTime
 import os
 import pycurl
-import scipy
 import xml.etree.ElementTree as ET
 
 quakeml_reader = Unpickler()
@@ -138,7 +138,7 @@ def find_lag_time(stream, reference_stream, phase):
     xcorr_values = []
     ref_envelope = ref_envelope.filled(0).tolist() + len(stream_envelope) * [0]
     ref_envelope = np.asarray(
-        smooth_data(ref_envelope, int(2 * round(1/float(values[parameters.index('lower_frequency')])))))
+        smooth_data(ref_envelope, int(round(1/float(values[parameters.index('upper_frequency')])))))
     for m in range(2 * len(stream_envelope)):
 
         # Shift the stream
@@ -148,7 +148,7 @@ def find_lag_time(stream, reference_stream, phase):
             shifted_stream_envelope = max(0, len(stream_envelope) - m) * [0] + \
                                       stream_envelope[:len(stream_envelope) - m].filled(0).tolist() + m * [0]
         shifted_stream_envelope = np.asarray(
-            smooth_data(shifted_stream_envelope, int(2 * round(1/float(values[parameters.index('lower_frequency')])))))
+            smooth_data(shifted_stream_envelope, int(round(1/float(values[parameters.index('upper_frequency')])))))
 
         # Perform cross-correlation
         try:
@@ -311,18 +311,11 @@ def find_rotation_angle(shifted_seismogram, reference_seismogram, phase):
                 x_corr_mean += normalised_xcorr_value
             normalised_xcorr_values.append(x_corr_mean / 2)
 
-            # plt.plot(reference_seismogram[0], linestyle='-', color='b')
-            # plt.plot(reference_seismogram[1], linestyle='-', color='r')
-            # plt.plot(spun_seismogram[0], linestyle='--', color='b')
-            # plt.plot(spun_seismogram[1], linestyle='--', color='r')
-            # plt.savefig(event + '_' + str(angle) + '_' + str(x_corr_mean / 2) + '_plot.png')
-            # plt.clf()
-
         # Give the max corr value
         max_xcorr_value = max(normalised_xcorr_values)
         max_xcorr_value_idx = normalised_xcorr_values.index(max_xcorr_value)
         plt.scatter(list(range(len(normalised_xcorr_values))), normalised_xcorr_values)
-        plt.savefig(event + '_xcorr_values.png')
+        plt.savefig(shifted_seismogram[0].stats.station + '_' + event + '_xcorr_values.png')
         plt.clf()
 
     return max_xcorr_value_idx, normalised_xcorr_values
@@ -515,6 +508,7 @@ def align_seismograms(stations, arrival_times, streams, downsampled_streams, ref
     for m in range(len(reference_station_stream)):
         if ma.is_masked(reference_station_stream[m].data):
             reference_station_stream[m].data = reference_station_stream[m].data.filled(float('nan'))
+        if ma.is_masked(downsampled_rss[m].data):
             downsampled_rss[m].data = downsampled_rss[m].data.filled(float('nan'))
 
     return nandices, reference_station_stream, downsampled_rss, shifted_streams, shifted_downsampled_streams
@@ -533,13 +527,13 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
     # Calculate horizontal total energy for the reference stream
     reference_total_energy_waveform = calculate_total_energy(downsampled_rss, phase)
     reference_total_energy_waveform = np.asarray(smooth_data(
-        reference_total_energy_waveform, int(2 * round(1/float(values[parameters.index('lower_frequency')])))))
+        reference_total_energy_waveform, int(round(1/float(values[parameters.index('upper_frequency')])))))
     for m in range(len(shifted_downsampled_streams)):
         # Calculate horizontal total energy for the station stream
         downsampled_sss = shifted_downsampled_streams[m].copy()
         shifted_stream_total_energy_waveform = calculate_total_energy(downsampled_sss, phase)
         shifted_stream_total_energy_waveform = np.asarray(smooth_data(
-            shifted_stream_total_energy_waveform, int(2 * round(1/float(values[parameters.index('lower_frequency')])))))
+            shifted_stream_total_energy_waveform, int(round(1/float(values[parameters.index('upper_frequency')])))))
 
         # Initiate one loop to work through each possible start time in the waveform
         normalised_xcorr_values = [([0] * len(reference_total_energy_waveform))
@@ -549,8 +543,8 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
                 break
             # Initiate a second loop to work through each possible end time in the waveform,
             # so that all possible windows are tested, BUT require that windows are at least 1 wavelength of the
-            # lowest frequency wavelet in length.
-            for o in range(n + int(round(1/float(values[parameters.index('lower_frequency')]))) *
+            # highest frequency wavelet in length.
+            for o in range(n + int(round(1/float(values[parameters.index('upper_frequency')]))) *
                            int(shifted_downsampled_streams[m][0].stats.sampling_rate) + 1,
                            len(reference_total_energy_waveform)):
                 if nandices[1] and o > nandices[1]:  # Don't do cross-correlation past the data
@@ -607,6 +601,271 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
     return xcorr_window
 
 
+def generate_polarity_xcorr_values(args):
+
+    """
+    Generate the range of polarity values through cross-correlation of event data at a given station
+    with that of the reference station.
+    """
+
+    event, station, parameters, values = args
+
+    print('\nevent is ' + str(event))
+    # Query event details from GeoNet FDSN
+    event_details = get_event(event)[0]
+    p_times, s_times = [], []
+    p_stations, s_stations = [], []
+    for pick in event_details.picks:
+        if '.' + station + '.' in str(pick.resource_id):
+            if pick.phase_hint == 'P':
+                p_times.append(pick.time.datetime)
+                p_stations.append(station)
+            elif pick.phase_hint == 'S':
+                s_times.append(pick.time.datetime)
+                s_stations.append(station)
+
+    # If event does not have picked phase arrivals, create theoretical ones
+    hypocentre = [event_details.origins[0].latitude,
+                  event_details.origins[0].longitude,
+                  event_details.origins[0].depth]
+    origin_time = event_details.origins[0].time
+    try:
+        station_location = FDSN_station_query(station)
+    except:
+        # If this fails, the station is not in FDSN. Ignore it.
+        print('Failed to query station ' + station + ' from FDSN; will not include in analysis')
+        return
+    # Calculate epicentral distance in degrees
+    delta = math.degrees(2 * (math.asin(((math.sin(1 / 2 * math.radians(abs(hypocentre[0] -
+                                                                            station_location[0])))) ** 2 +
+                                         math.cos(math.radians(hypocentre[0])) *
+                                         math.cos(math.radians(station_location[0])) *
+                                         (math.sin(1 / 2 * math.radians(abs(hypocentre[1] -
+                                                                            station_location[1])))) ** 2) **
+                                        (1 / 2))))
+    # Calculate theoretical travel times
+    arrivals = spherical_velocity_model.get_travel_times(source_depth_in_km=hypocentre[2] / 1000.0,
+                                                         receiver_depth_in_km=max(
+                                                             0.0, (station_location[2] / 1000.0)),
+                                                         distance_in_degree=delta,
+                                                         phase_list=['p', 'P', 's', 'S'])
+    # Extract travel times
+    p_tt, s_tt = None, None
+    for arrival in arrivals:
+        if arrival.name == 'p' or arrival.name == 'P' and p_tt is None:
+            p_tt = arrival.time
+        if arrival.name == 's' or arrival.name == 'S' and s_tt is None:
+            s_tt = arrival.time
+    # Save travel times, if none exist for the station
+    if station not in p_stations:
+        p_times.append(origin_time + datetime.timedelta(seconds=p_tt))
+        p_stations.append(station)
+    if station not in s_stations:
+        s_times.append(origin_time + datetime.timedelta(seconds=s_tt))
+        s_stations.append(station)
+
+    # Get data around P phase
+    phase = 'p'
+    reference_station_stream, downsampled_rss, streams, downsampled_streams = \
+        get_data(p_times, [values[parameters.index('reference_station')], station], phase, parameters, values)
+
+    print('All P-phase data has been loaded into the script. '
+          'Finding shift times to apply to each station to align them with the reference station...')
+
+    # Align P phase data
+    nandices, reference_station_stream, downsampled_rss, shifted_streams, shifted_downsampled_streams = \
+        align_seismograms(p_stations, p_times, streams, downsampled_streams, reference_station_stream,
+                          downsampled_rss, phase, parameters, values)
+
+    print('All P-phase seismograms have now been aligned. '
+          'Searching now for the optimal cross-correlation windows...')
+
+    xcorr_window = find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, phase, parameters,
+                                     values)
+    if xcorr_window is np.nan:
+        print('This event will not continue through the analysis.')
+        return
+
+    print('All P-phase cross-correlation windows are now defined. '
+          'The orientation angles will now be calculated...')
+
+    # Perform the orientation angle calculation in the cross-correlation window
+    for m in range(len(shifted_streams)):
+        print('Station is ' + str(shifted_streams[m][0].stats.station))
+
+        # Make copies of data streams for shifting
+        trimmed_and_shifted_streams = shifted_streams[m].copy()
+        trimmed_reference_stream = reference_station_stream.copy()
+
+        # Trim data to window
+        window_start = xcorr_window[m][0]
+        window_end = xcorr_window[m][1]
+        trimmed_and_shifted_streams.trim(starttime=window_start,
+                                         endtime=window_end)
+        trimmed_reference_stream.trim(starttime=window_start,
+                                      endtime=window_end)
+
+        # Retain only z component data
+        for n, tr in enumerate(trimmed_and_shifted_streams):
+            if tr.stats.channel[-1] == 'Z':
+                trimmed_and_shifted_streams = [tr]
+        for n, tr in enumerate(trimmed_reference_stream):
+            if tr.stats.channel[-1] == 'Z':
+                trimmed_reference_stream = [tr]
+
+        # Calculate angle
+        polarity, xcorr_values = find_rotation_angle(trimmed_and_shifted_streams, trimmed_reference_stream, phase)
+        print('Polarity is ' + str(polarity))
+        np.save(shifted_streams[m][0].stats.station + '_' + event + '_' + phase + '_xcorr_values.npy', xcorr_values)
+
+
+def generate_rotation_xcorr_angles(args):
+
+    """
+    Generate the range of rotation correlation values through cross-correlation of event data at a given station
+    with that of the reference station.
+    """
+
+    event, station, polarity, parameters, values = args
+
+    print('\nevent is ' + str(event))
+    # Query event details from GeoNet FDSN
+    event_details = get_event(event)[0]
+    p_times, s_times = [], []
+    p_stations, s_stations = [], []
+    for pick in event_details.picks:
+        if '.' + station + '.' in str(pick.resource_id):
+            if pick.phase_hint == 'P':
+                p_times.append(pick.time.datetime)
+                p_stations.append(station)
+            elif pick.phase_hint == 'S':
+                s_times.append(pick.time.datetime)
+                s_stations.append(station)
+
+    # If event does not have picked phase arrivals, create theoretical ones
+    hypocentre = [event_details.origins[0].latitude,
+                  event_details.origins[0].longitude,
+                  event_details.origins[0].depth]
+    origin_time = event_details.origins[0].time
+    try:
+        station_location = FDSN_station_query(station)
+    except:
+        # If this fails, the station is not in FDSN. Ignore it.
+        print('Failed to query station ' + station + ' from FDSN; will not include in analysis')
+        return
+    # Calculate epicentral distance in degrees
+    delta = math.degrees(2 * (math.asin(((math.sin(1 / 2 * math.radians(abs(hypocentre[0] -
+                                                                            station_location[0])))) ** 2 +
+                                         math.cos(math.radians(hypocentre[0])) *
+                                         math.cos(math.radians(station_location[0])) *
+                                         (math.sin(1 / 2 * math.radians(abs(hypocentre[1] -
+                                                                            station_location[1])))) ** 2) **
+                                        (1 / 2))))
+    # Calculate theoretical travel times
+    arrivals = spherical_velocity_model.get_travel_times(source_depth_in_km=hypocentre[2] / 1000.0,
+                                                         receiver_depth_in_km=max(
+                                                             0.0, (station_location[2] / 1000.0)),
+                                                         distance_in_degree=delta,
+                                                         phase_list=['p', 'P', 's', 'S'])
+    # Extract travel times
+    p_tt, s_tt = None, None
+    for arrival in arrivals:
+        if arrival.name == 'p' or arrival.name == 'P' and p_tt is None:
+            p_tt = arrival.time
+        if arrival.name == 's' or arrival.name == 'S' and s_tt is None:
+            s_tt = arrival.time
+    # Save travel times, if none exist for the station
+    if station not in p_stations:
+        p_times.append(origin_time + datetime.timedelta(seconds=p_tt))
+        p_stations.append(station)
+    if station not in s_stations:
+        s_times.append(origin_time + datetime.timedelta(seconds=s_tt))
+        s_stations.append(station)
+
+    # Get data around S phase
+    phase = 's'
+    reference_station_stream, downsampled_rss, streams, downsampled_streams = \
+        get_data(s_times, [values[parameters.index('reference_station')], station], phase, parameters, values)
+
+    # Scale data by polarity
+    for tr in reference_station_stream:
+        tr.data *= polarity
+    for tr in downsampled_rss:
+        tr.data *= polarity
+    for stream in streams:
+        for tr in stream:
+            tr.data *= polarity
+    for stream in downsampled_streams:
+        for tr in stream:
+            tr.data *= polarity
+
+    print('All S-phase data has been loaded into the script. '
+          'Finding shift times to apply to each station to align them with the reference station...')
+
+    # Align S phase data
+    nandices, reference_station_stream, downsampled_rss, shifted_streams, shifted_downsampled_streams = \
+        align_seismograms(s_stations, s_times, streams, downsampled_streams, reference_station_stream,
+                          downsampled_rss, phase, parameters, values)
+
+    print('All S-phase seismograms have now been aligned. '
+          'Searching now for the optimal cross-correlation windows...')
+
+    plt.plot(reference_station_stream[0].data, linestyle='-', color='b')
+    plt.plot(reference_station_stream[1].data, linestyle='-', color='r')
+    plt.plot(shifted_streams[0][0].data, linestyle='--', color='b')
+    plt.plot(shifted_streams[0][1].data, linestyle='--', color='r')
+    plt.savefig(shifted_streams[0][0].stats.station + '_' + event + '_shifted_plot.png')
+    plt.clf()
+
+    xcorr_window = find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, phase, parameters,
+                                     values)
+    if xcorr_window is np.nan:
+        print('This event will not continue through the analysis.')
+        return
+
+    print('All S-phase cross-correlation windows are now defined. '
+          'The orientation angles will now be calculated...')
+
+    # Perform the orientation angle calculation in the cross-correlation window
+    for m in range(len(shifted_streams)):
+        print('Station is ' + str(shifted_streams[m][0].stats.station))
+
+        # Make copies of data streams for shifting
+        trimmed_and_shifted_streams = shifted_streams[m].copy()
+        trimmed_reference_stream = reference_station_stream.copy()
+
+        # Trim data to window
+        window_start = xcorr_window[m][0]
+        window_end = xcorr_window[m][1]
+        trimmed_and_shifted_streams.trim(starttime=window_start,
+                                         endtime=window_end)
+        trimmed_reference_stream.trim(starttime=window_start,
+                                      endtime=window_end)
+
+        # Remove all z component data
+        for n, tr in enumerate(trimmed_and_shifted_streams):
+            if tr.stats.channel[-1] == 'Z':
+                trimmed_and_shifted_streams.pop(n)
+        for n, tr in enumerate(trimmed_reference_stream):
+            if tr.stats.channel[-1] == 'Z':
+                trimmed_reference_stream.pop(n)
+
+        # Plot data for reference
+        plt.plot(trimmed_reference_stream[0].data, linestyle='-', color='b')
+        plt.plot(trimmed_reference_stream[1].data, linestyle='-', color='r')
+        plt.plot(trimmed_and_shifted_streams[0].data, linestyle='--', color='b')
+        plt.plot(trimmed_and_shifted_streams[1].data, linestyle='--', color='r')
+        plt.savefig(shifted_streams[m][0].stats.station + '_' + event + '_trimmed_and_shifted_plot.png')
+
+        plt.clf()
+
+        # Calculate angle
+        orientation_angle, xcorr_values = find_rotation_angle(trimmed_and_shifted_streams,
+                                                              trimmed_reference_stream, phase)
+        print('Rotation angle is ' + str(orientation_angle))
+        np.save(shifted_streams[m][0].stats.station + '_' + event + '_' + phase + '_xcorr_values.npy', xcorr_values)
+
+
 if __name__ == "__main__":
 
     # Parse data from config file
@@ -628,6 +887,7 @@ if __name__ == "__main__":
     stations_to_orient = [item for sublist in stations_to_orient for item in sublist]
     events = parse_csv(values[parameters.index('eventid_file')], header=False)
     events = [item for sublist in events for item in sublist]
+    events.sort()
 
     # Define list of stations to query data from FDSN for
     query_stations = []
@@ -637,234 +897,88 @@ if __name__ == "__main__":
     else:
         query_stations = stations_to_orient
 
-    # For each event, produce the orientation angle for each station
-    all_orientation_angles = []
-    all_orientation_angle_xcorr_values = []
-    for event in events:
-        print('\nevent is ' + str(event))
-        # Query event details from GeoNet FDSN
-        event_details = get_event(event)[0]
-        p_times, s_times = [], []
-        p_stations, s_stations = [], []
-        for pick in event_details.picks:
-            for station in query_stations:
-                if '.' + station + '.' in str(pick.resource_id):
-                    if pick.phase_hint == 'P':
-                        p_times.append(pick.time.datetime)
-                        p_stations.append(station)
-                    elif pick.phase_hint == 'S':
-                        s_times.append(pick.time.datetime)
-                        s_stations.append(station)
+    # For each station, derive a polarity from all events
 
-        # If event does not have picked phase arrivals, create theoretical ones
-        hypocentre = [event_details.origins[0].latitude,
-                      event_details.origins[0].longitude,
-                      event_details.origins[0].depth]
-        origin_time = event_details.origins[0].time
-        for station in query_stations:
+    args = []
+    for station in stations_to_orient:
+        for event in events:
+            # Send jobs to the pool of workers
+            args.append([event, station, parameters, values])
+
+    pool = multiprocessing.Pool(8)
+    pool.map(generate_polarity_xcorr_values, args)
+    pool.close()
+    pool.join()
+
+    print('\nCalculating stacked polarities for stations...')
+    site_polarities = []
+    for m, station in enumerate(stations_to_orient):
+        site_polarity_xcorr_values = [0] * 2
+        nevents = 0
+        for n, event in enumerate(events):
             try:
-                station_location = FDSN_station_query(station)
-            except:
-                # If this fails, the station is not in FDSN. Ignore it.
+                xcorr_values = np.load(station + '_' + event + '_p_xcorr_values.npy')
+                nevents += 1
+            except FileNotFoundError:
+                print('Failed to find file ' + station + '_' + event + '_p_xcorr_values.npy')
                 continue
-            # Calculate epicentral distance in degrees
-            delta = math.degrees(2 * (math.asin(((math.sin(1 / 2 * math.radians(abs(hypocentre[0] -
-                                                                                    station_location[0])))) ** 2 +
-                                                 math.cos(math.radians(hypocentre[0])) *
-                                                 math.cos(math.radians(station_location[0])) *
-                                                 (math.sin(1 / 2 * math.radians(abs(hypocentre[1] -
-                                                                                    station_location[1])))) ** 2) **
-                                                (1 / 2))))
-            # Calculate theoretical travel times
-            arrivals = spherical_velocity_model.get_travel_times(source_depth_in_km=hypocentre[2] / 1000.0,
-                                                                 receiver_depth_in_km=max(
-                                                                     0.0, (station_location[2] / 1000.0)),
-                                                                 distance_in_degree=delta,
-                                                                 phase_list=['p', 'P', 's', 'S'])
-            # Extract travel times
-            p_tt, s_tt = None, None
-            for arrival in arrivals:
-                if arrival.name == 'p' or arrival.name == 'P' and p_tt is None:
-                    p_tt = arrival.time
-                if arrival.name == 's' or arrival.name == 'S' and s_tt is None:
-                    s_tt = arrival.time
-            # Save travel times, if none exist for the station
-            if station not in p_stations:
-                p_times.append(origin_time + datetime.timedelta(seconds=p_tt))
-                p_stations.append(station)
-            if station not in s_stations:
-                s_times.append(origin_time + datetime.timedelta(seconds=s_tt))
-                s_stations.append(station)
+            for o in range(len(xcorr_values)):
+                site_polarity_xcorr_values[o] += xcorr_values[o]
 
-        # Get data around P phase
-        phase = 'p'
-        reference_station_stream, downsampled_rss, streams, downsampled_streams = \
-            get_data(p_times, query_stations, phase, parameters, values)
-
-        print('All P-phase data has been loaded into the script. '
-              'Finding shift times to apply to each station to align them with the reference station...')
-
-        # Align P phase data
-        nandices, reference_station_stream, downsampled_rss, shifted_streams, shifted_downsampled_streams = \
-            align_seismograms(p_stations, p_times, streams, downsampled_streams, reference_station_stream,
-                              downsampled_rss, phase, parameters, values)
-
-        print('All P-phase seismograms have now been aligned. '
-              'Searching now for the optimal cross-correlation windows...')
-
-        xcorr_window = find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, phase, parameters,
-                                         values)
-        if xcorr_window is np.nan:
-            print('This event will not continue through the analysis.')
-            continue
-
-        print('All P-phase cross-correlation windows are now defined. '
-              'The orientation angles will now be calculated...')
-
-        # Perform the orientation angle calculation in the cross-correlation window
-        orientation_angles = []
-        orientation_angle_xcorr_values = []
-        for m in range(len(shifted_streams)):
-            print('Station is ' + str(shifted_streams[m][0].stats.station))
-
-            # Make copies of data streams for shifting
-            trimmed_and_shifted_streams = shifted_streams[m].copy()
-            trimmed_reference_stream = reference_station_stream.copy()
-
-            # Trim data to window
-            window_start = xcorr_window[m][0]
-            window_end = xcorr_window[m][1]
-            trimmed_and_shifted_streams.trim(starttime=window_start,
-                                             endtime=window_end)
-            trimmed_reference_stream.trim(starttime=window_start,
-                                          endtime=window_end)
-
-            # Retain only z component data
-            for n, tr in enumerate(trimmed_and_shifted_streams):
-                if tr.stats.channel[-1] == 'Z':
-                    trimmed_and_shifted_streams = [tr]
-            for n, tr in enumerate(trimmed_reference_stream):
-                if tr.stats.channel[-1] == 'Z':
-                    trimmed_reference_stream = [tr]
-
-            # Calculate angle
-            polarity, xcorr_values = find_rotation_angle(trimmed_and_shifted_streams, trimmed_reference_stream, phase)
-            print('Polarity is ' + str(polarity))
-
-        # Get data around S phase
-        phase = 's'
-        reference_station_stream, downsampled_rss, streams, downsampled_streams = \
-            get_data(s_times, query_stations, phase, parameters, values)
-
-        # Scale data by polarity
-        for tr in reference_station_stream:
-            tr.data *= polarity
-        for tr in downsampled_rss:
-            tr.data *= polarity
-        for stream in streams:
-            for tr in stream:
-                tr.data *= polarity
-        for stream in downsampled_streams:
-            for tr in stream:
-                tr.data *= polarity
-
-        print('All S-phase data has been loaded into the script. '
-              'Finding shift times to apply to each station to align them with the reference station...')
-
-        # Align S phase data
-        nandices, reference_station_stream, downsampled_rss, shifted_streams, shifted_downsampled_streams = \
-            align_seismograms(s_stations, s_times, streams, downsampled_streams, reference_station_stream,
-                              downsampled_rss, phase, parameters, values)
-
-        print('All S-phase seismograms have now been aligned. '
-              'Searching now for the optimal cross-correlation windows...')
-
-        plt.plot(reference_station_stream[0].data, linestyle='-', color='b')
-        plt.plot(reference_station_stream[1].data, linestyle='-', color='r')
-        plt.plot(shifted_streams[0][0].data, linestyle='--', color='b')
-        plt.plot(shifted_streams[0][1].data, linestyle='--', color='r')
-        plt.savefig(event + '_shifted_plot.png')
-        plt.clf()
-
-        xcorr_window = find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, phase, parameters,
-                                         values)
-        if xcorr_window is np.nan:
-            print('This event will not continue through the analysis.')
-            continue
-
-        print('All S-phase cross-correlation windows are now defined. '
-              'The orientation angles will now be calculated...')
-
-        # Perform the orientation angle calculation in the cross-correlation window
-        orientation_angles = []
-        orientation_angle_xcorr_values = []
-        for m in range(len(shifted_streams)):
-            print('Station is ' + str(shifted_streams[m][0].stats.station))
-
-            # Make copies of data streams for shifting
-            trimmed_and_shifted_streams = shifted_streams[m].copy()
-            trimmed_reference_stream = reference_station_stream.copy()
-
-            # Trim data to window
-            window_start = xcorr_window[m][0]
-            window_end = xcorr_window[m][1]
-            trimmed_and_shifted_streams.trim(starttime=window_start,
-                                             endtime=window_end)
-            trimmed_reference_stream.trim(starttime=window_start,
-                                          endtime=window_end)
-
-            # Remove all z component data
-            for n, tr in enumerate(trimmed_and_shifted_streams):
-                if tr.stats.channel[-1] == 'Z':
-                    trimmed_and_shifted_streams.pop(n)
-            for n, tr in enumerate(trimmed_reference_stream):
-                if tr.stats.channel[-1] == 'Z':
-                    trimmed_reference_stream.pop(n)
-
-            # Plot data for reference
-            plt.plot(trimmed_reference_stream[0].data, linestyle='-', color='b')
-            plt.plot(trimmed_reference_stream[1].data, linestyle='-', color='r')
-            plt.plot(trimmed_and_shifted_streams[0].data, linestyle='--', color='b')
-            plt.plot(trimmed_and_shifted_streams[1].data, linestyle='--', color='r')
-            plt.savefig(event + '_trimmed_and_shifted_plot.png')
-
-            plt.clf()
-
-            # Calculate angle
-            orientation_angle, xcorr_values = find_rotation_angle(trimmed_and_shifted_streams,
-                                                                  trimmed_reference_stream, phase)
-            print('Rotation angle is ' + str(orientation_angle))
-            orientation_angles.append(orientation_angle)
-            orientation_angle_xcorr_values.append(xcorr_values)
-
-        # Save orientation angles for the event
-        all_orientation_angles.append(orientation_angles)
-        all_orientation_angle_xcorr_values.append(orientation_angle_xcorr_values)
-
-    # Calculate average orientation angle and error from angle distributions
-    site_orientation_angles = [[] for n in range(len(stations_to_orient))]
-    site_orientation_angle_xcorr_values = [[0] * len(list(range(0, 360))) for n in range(len(stations_to_orient))]
-    for m in range(len(events)):
-        for n in range(len(stations_to_orient)):
-            for o in range(len(all_orientation_angle_xcorr_values[m][n])):
-                site_orientation_angle_xcorr_values[n][o] += all_orientation_angle_xcorr_values[m][n][o]
-            site_orientation_angles[n].append(all_orientation_angles[m][n])
-    print('\nNumber of events used for orientation is ' + str(len(events)))
-    for n in range(len(site_orientation_angles)):
-        plt.scatter(list(range(0, 360)), site_orientation_angle_xcorr_values[n])
-        plt.savefig(stations_to_orient[n] + '_xcorr_values.png')
-
-        print('Site is: ' + str(stations_to_orient[n]))
+        print('Number of events used for polarity determination is ' + str(nevents))
 
         # Give value from all data
-        max_xcorr_value = max(site_orientation_angle_xcorr_values[n])
-        max_xorr_value_idx = site_orientation_angle_xcorr_values[n].index(max_xcorr_value)
-        print('Stacked peak orientation angle is: ' + str(max_xorr_value_idx))
-
-        # Return values from statistics of peak values
-        print('Mean orientation angle is: ' + str(np.mean(site_orientation_angles[n])))
-        print('Median orientation angle is: ' + str(np.median(site_orientation_angles[n])))
-        print('Orientation angle mode is: ' + str(scipy.stats.mode(site_orientation_angles[n])))
-        print('Orientation angle stdev is: ' + str(np.std(site_orientation_angles[n])))
-
+        max_xcorr_value = max(site_polarity_xcorr_values)
+        max_xcorr_value_idx = site_polarity_xcorr_values.index(max_xcorr_value)
+        print('Stacked peak polarity is: ' + str([1, -1][max_xcorr_value_idx]))
         print('\n')
+        polarity = [1, -1][max_xcorr_value_idx]
+        site_polarities.append(polarity)
+
+    # For each station, derive an orientation angle from all events
+
+    args = []
+    for m, station in enumerate(stations_to_orient):
+        for event in events:
+            # Send jobs to the pool of workers
+            args.append([event, station, site_polarities[m], parameters, values])
+
+    pool = multiprocessing.Pool(8)
+    pool.map(generate_rotation_xcorr_angles, args)
+    pool.close()
+    pool.join()
+
+    # For each station, derive a rotation angle from all events and save to file
+
+    print('\nCalculating stacked orientation angles for stations...')
+    site_rotation_angles = []
+    for m, station in enumerate(stations_to_orient):
+        site_rotation_xcorr_values = [0] * 360
+        nevents = 0
+        for n, event in enumerate(events):
+            try:
+                xcorr_values = np.load(station + '_' + event + '_s_xcorr_values.npy')
+                nevents += 1
+            except FileNotFoundError:
+                print('Failed to find file ' + station + '_' + event + '_s_xcorr_values.npy')
+                continue
+            for o in range(len(xcorr_values)):
+                site_rotation_xcorr_values[o] += xcorr_values[o]
+
+        print('Number of events used for rotation determination is ' + str(nevents))
+        plt.scatter(list(range(0, 360)), site_rotation_xcorr_values)
+        plt.savefig(stations_to_orient[m] + '_xcorr_values.png')
+
+        # Give value from all data
+        max_xcorr_value = max(site_rotation_xcorr_values)
+        max_xcorr_value_idx = site_rotation_xcorr_values.index(max_xcorr_value)
+        print('Stacked peak rotation value is: ' + str(max_xcorr_value_idx))
+        site_rotation_angles.append(max_xcorr_value_idx)
+
+    # Write results to file
+    with open('find_sensor_orientation_output.csv', 'w') as outfile:
+        outfile.write('Station,Polarity,Orientation Angle\n')
+    with open('find_sensor_orientation_output.csv', 'a') as outfile:
+        for m in range(len(stations_to_orient)):
+            outfile.write(str(stations_to_orient[m]) + ',' + str(site_polarities[m]) + ',' +
+                          str(site_rotation_angles[m]) + '\n')
