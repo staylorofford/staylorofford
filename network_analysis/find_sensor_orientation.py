@@ -314,9 +314,6 @@ def find_rotation_angle(shifted_seismogram, reference_seismogram, phase):
         # Give the max corr value
         max_xcorr_value = max(normalised_xcorr_values)
         max_xcorr_value_idx = normalised_xcorr_values.index(max_xcorr_value)
-        plt.scatter(list(range(len(normalised_xcorr_values))), normalised_xcorr_values)
-        plt.savefig(shifted_seismogram[0].stats.station + '_' + event + '_xcorr_values.png')
-        plt.clf()
 
     return max_xcorr_value_idx, normalised_xcorr_values
 
@@ -856,7 +853,6 @@ def generate_rotation_xcorr_angles(args):
         plt.plot(trimmed_and_shifted_streams[0].data, linestyle='--', color='b')
         plt.plot(trimmed_and_shifted_streams[1].data, linestyle='--', color='r')
         plt.savefig(shifted_streams[m][0].stats.station + '_' + event + '_trimmed_and_shifted_plot.png')
-
         plt.clf()
 
         # Calculate angle
@@ -964,6 +960,9 @@ if __name__ == "__main__":
                 continue
             for o in range(len(xcorr_values)):
                 site_rotation_xcorr_values[o] += xcorr_values[o]
+            plt.scatter(list(range(len(xcorr_values))), xcorr_values)
+            plt.savefig(station + '_' + event + '_xcorr_values.png')
+            plt.clf()
 
         print('Number of events used for rotation determination is ' + str(nevents))
         plt.scatter(list(range(0, 360)), site_rotation_xcorr_values)
