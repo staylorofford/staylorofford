@@ -21,6 +21,7 @@ from obspy.io.quakeml.core import Unpickler
 from obspy.core.utcdatetime import UTCDateTime
 import os
 import pycurl
+import time
 import xml.etree.ElementTree as ET
 
 quakeml_reader = Unpickler()
@@ -340,14 +341,14 @@ def FDSN_station_query(station):
     return latitude, longitude, depth
 
 
-def get_data(arrival_times, query_stations, phase, parameters, values):
+def get_data(event, arrival_times, query_stations, phase, parameters, values):
 
     """
     Get data for the given stations and input parameters for the given phase in arrival times.
     """
 
-    # Assume non-scattered phase arrivals do not occur after 20 seconds after the
-    # last first arrival at any station
+    # Assume non-scattered phase arrivals do not occur after the phase window length after the
+    # last first arrival at any station and vice versa for the early arrivals
 
     start_time = min(arrival_times) - datetime.timedelta(seconds=
                                                          int(values[parameters.index(phase + '_window')]))
@@ -395,6 +396,12 @@ def get_data(arrival_times, query_stations, phase, parameters, values):
                                         UTCDateTime(start_time),
                                         UTCDateTime(end_time))[0]
 
+        # Plot the data before any manipulation
+        fig = plt.figure()
+        station_stream.plot(fig=fig)
+        plt.savefig(station + '_' + event + '_' + phase + '_1-raw-data.png')
+        plt.clf()
+
         # Filter the waveforms of all events to increase waveform similarly at all sensors:
         # Filter corner frequency satisfies the condition that it is much smaller than the lowest seismic velocity
         # in the propagation medium of all events scaled by the linear distance between each pair of sensors.
@@ -404,6 +411,12 @@ def get_data(arrival_times, query_stations, phase, parameters, values):
         # Cut first and last 10 seconds of data to remove edge effects introduced by filtering
         station_stream.trim(station_stream[0].stats.starttime + 10,
                             station_stream[0].stats.endtime - 10)
+
+        # Plot the data after filtering
+        fig = plt.figure()
+        station_stream.plot(fig=fig)
+        plt.savefig(station + '_' + event + '_' + phase + '_2-filtered-data.png')
+        plt.clf()
 
         # Resample a copy of the stream to twice the corner frequency
         downsampled_station_stream = station_stream.copy()
@@ -524,76 +537,72 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
     # Calculate horizontal total energy for the reference stream
     reference_total_energy_waveform = calculate_total_energy(downsampled_rss, phase)
     reference_total_energy_waveform = np.asarray(smooth_data(
-        reference_total_energy_waveform, int(round(1/float(values[parameters.index('upper_frequency')])))))
+        reference_total_energy_waveform, int(round(1/float(values[parameters.index('lower_frequency')])))))
     for m in range(len(shifted_downsampled_streams)):
         # Calculate horizontal total energy for the station stream
         downsampled_sss = shifted_downsampled_streams[m].copy()
         shifted_stream_total_energy_waveform = calculate_total_energy(downsampled_sss, phase)
         shifted_stream_total_energy_waveform = np.asarray(smooth_data(
-            shifted_stream_total_energy_waveform, int(round(1/float(values[parameters.index('upper_frequency')])))))
-
+            shifted_stream_total_energy_waveform, int(round(1/float(values[parameters.index('lower_frequency')])))))
         # Initiate one loop to work through each possible start time in the waveform
-        normalised_xcorr_values = [([0] * len(reference_total_energy_waveform))
-                                   for y in range(len(shifted_stream_total_energy_waveform))]
-        for n in range(nandices[0], len(shifted_stream_total_energy_waveform)):
+        normalised_xcorr_values = [0] * len(shifted_stream_total_energy_waveform)
+        window_length = ((int(values[parameters.index(phase + '_window')]) - 10) *
+                         int(shifted_downsampled_streams[m][0].stats.sampling_rate))
+        for n in range(nandices[0], len(shifted_stream_total_energy_waveform) - window_length):
             if nandices[1] and n > nandices[1]:  # Don't do cross-correlation past the data
                 break
-            # Initiate a second loop to work through each possible end time in the waveform,
-            # so that all possible windows are tested, BUT require that windows are at least 1 wavelength of the
-            # highest frequency wavelet in length.
-            for o in range(n + int(round(1/float(values[parameters.index('upper_frequency')]))) *
-                           int(shifted_downsampled_streams[m][0].stats.sampling_rate) + 1,
-                           len(reference_total_energy_waveform)):
-                if nandices[1] and o > nandices[1]:  # Don't do cross-correlation past the data
+            #  Investigate each search window  at least 1 of the phase search windows long after the current n
+            #  (minus 10 seconds on either due to trimming post-filtering).
+            o = n + window_length
+            if nandices[1] and o > nandices[1]:  # Don't do cross-correlation past the data
+                break
+            # Calculate mean, variance for data in the given window
+            x_mean = np.nanmean(shifted_stream_total_energy_waveform[n:o])
+            y_mean = np.nanmean(reference_total_energy_waveform[n:o])
+            x_var = np.nanvar(shifted_stream_total_energy_waveform[n:o])
+            y_var = np.nanvar(reference_total_energy_waveform[n:o])
+            if x_var == 0 or y_var == 0:
+                continue
+            if np.isnan(x_mean) or np.isnan(y_mean) or np.isnan(x_var) or np.isnan(y_var):
+                continue
+            # Iterate through all values in the given window
+            sum = 0
+            for p in range(n, o):
+                # Skip this window if there are any nan values
+                if (np.isnan(shifted_stream_total_energy_waveform[p]) or
+                        ma.is_masked(shifted_stream_total_energy_waveform[p]) or
+                        np.isnan(reference_total_energy_waveform[p]) or
+                        ma.is_masked(reference_total_energy_waveform[p])):
                     break
-                # Calculate mean, variance for data in the given window
-                x_mean = np.nanmean(shifted_stream_total_energy_waveform[n:o])
-                y_mean = np.nanmean(reference_total_energy_waveform[n:o])
-                x_var = np.nanvar(shifted_stream_total_energy_waveform[n:o])
-                y_var = np.nanvar(reference_total_energy_waveform[n:o])
-                if x_var == 0 or y_var == 0:
-                    continue
-                if np.isnan(x_mean) or np.isnan(y_mean) or np.isnan(x_var) or np.isnan(y_var):
-                    continue
-                # Iterate through all values in the given window
-                sum = 0
-                for p in range(n, o):
-                    # Skip this window if there are any nan values
-                    if (np.isnan(shifted_stream_total_energy_waveform[p]) or
-                            ma.is_masked(shifted_stream_total_energy_waveform[p]) or
-                            np.isnan(reference_total_energy_waveform[p]) or
-                            ma.is_masked(reference_total_energy_waveform[p])):
-                        break
-                    sum += ((shifted_stream_total_energy_waveform[p] - x_mean) *
-                            (reference_total_energy_waveform[p] - y_mean))
-                normalised_xcorr_value = (1 / len(shifted_stream_total_energy_waveform[n:o]) *
-                                          sum / math.sqrt(x_var * y_var))
-                # Store normalised cross-correlation values in a nested list where the first index is the window
-                # start index and the second index is the window end index.
-                normalised_xcorr_values[n][o] = normalised_xcorr_value
+                sum += ((shifted_stream_total_energy_waveform[p] - x_mean) *
+                        (reference_total_energy_waveform[p] - y_mean))
+            normalised_xcorr_value = (1 / len(shifted_stream_total_energy_waveform[n:o]) *
+                                      sum / math.sqrt(x_var * y_var))
+            # Store normalised cross-correlation values in a nested list where the first index is the window
+            # start index and the second index is the window end index.
+            normalised_xcorr_values[n] = normalised_xcorr_value
         if np.nanmax(normalised_xcorr_values) == 0:
             print('Seismograms failed to find any suitable correlation window!')
             return np.nan
-        normalised_xcorr_values = np.asarray(normalised_xcorr_values)
-        max_normalised_xcorr_value_idx = np.unravel_index(np.nanargmax(normalised_xcorr_values),
-                                                          normalised_xcorr_values.shape)
+        max_normalised_xcorr_value_idx = normalised_xcorr_values.index(max(normalised_xcorr_values))
         print('For station ' + shifted_downsampled_streams[m][0].stats.station +
               ' maximum normalised cross-correlation value occurs between times ' +
-              str(downsampled_sss[0].times(type='utcdatetime')[max_normalised_xcorr_value_idx[0]]) +
-              ' (index ' + str(max_normalised_xcorr_value_idx[0]) + ' in downsampled data) - ' +
-              str(downsampled_sss[0].times(type='utcdatetime')[max_normalised_xcorr_value_idx[1]]) +
-              ' in the aligned data (index ' + str(max_normalised_xcorr_value_idx[1]) + ' in the downsampled data)')
-        print('Maximum cross-correlation value is: ' + str(normalised_xcorr_values[max_normalised_xcorr_value_idx]))
-        if nandices[0] > max_normalised_xcorr_value_idx[0]:
-            print('There are ' + str(nandices[0] - max_normalised_xcorr_value_idx[0]) +
+              str(downsampled_sss[0].times(type='utcdatetime')[max_normalised_xcorr_value_idx]) +
+              ' (index ' + str(max_normalised_xcorr_value_idx) + ' in downsampled data) - ' +
+              str(downsampled_sss[0].times(type='utcdatetime')[max_normalised_xcorr_value_idx + window_length]) +
+              ' in the aligned data (index ' + str(max_normalised_xcorr_value_idx + window_length) +
+              ' in the downsampled data)')
+        print('Maximum cross-correlation value is: ' + str(max(normalised_xcorr_values)))
+        if nandices[0] > max_normalised_xcorr_value_idx:
+            print('There are ' + str(nandices[0] - max_normalised_xcorr_value_idx) +
                   ' NaN values at the front of the cross-correlation window in the downsampled aligned data')
-        if nandices[1] and nandices[1] < max_normalised_xcorr_value_idx[1]:
-            print('There are ' + str(max_normalised_xcorr_value_idx[1] - nandices[1]) +
+        if nandices[1] and nandices[1] < max_normalised_xcorr_value_idx + window_length:
+            print('There are ' + str(max_normalised_xcorr_value_idx + window_length - nandices[1]) +
                   ' NaN values at the end of the cross-correlation window in the downsampled aligned data')
         xcorr_window.append([downsampled_sss[0].times(type='utcdatetime')[
-                                 max_normalised_xcorr_value_idx[0]],
+                                 max_normalised_xcorr_value_idx],
                              downsampled_sss[0].times(type='utcdatetime')[
-                                 max_normalised_xcorr_value_idx[1]]])
+                                 max_normalised_xcorr_value_idx + window_length]])
 
     return xcorr_window
 
@@ -664,7 +673,7 @@ def generate_polarity_xcorr_values(args):
     # Get data around P phase
     phase = 'p'
     reference_station_stream, downsampled_rss, streams, downsampled_streams = \
-        get_data(p_times, [values[parameters.index('reference_station')], station], phase, parameters, values)
+        get_data(event, p_times, [values[parameters.index('reference_station')], station], phase, parameters, values)
 
     print('All P-phase data has been loaded into the script. '
           'Finding shift times to apply to each station to align them with the reference station...')
@@ -701,6 +710,24 @@ def generate_polarity_xcorr_values(args):
                                          endtime=window_end)
         trimmed_reference_stream.trim(starttime=window_start,
                                       endtime=window_end)
+
+        # Show xcorr window over trimmed and shifted data
+
+        plt.subplot(411)
+        plt.plot(reference_station_stream[0].times(type='utcdatetime'), reference_station_stream[0].data)
+        plt.plot(trimmed_reference_stream[0].times(type='utcdatetime'), trimmed_reference_stream[0].data, color='red')
+        plt.subplot(412)
+        plt.plot(reference_station_stream[1].times(type='utcdatetime'), reference_station_stream[1].data)
+        plt.plot(trimmed_reference_stream[1].times(type='utcdatetime'), trimmed_reference_stream[1].data, color='red')
+        plt.subplot(413)
+        plt.plot(shifted_streams[m][0].times(type='utcdatetime'), shifted_streams[m][0].data)
+        plt.plot(trimmed_and_shifted_streams[0].times(type='utcdatetime'), trimmed_and_shifted_streams[0].data, color='red')
+        plt.subplot(414)
+        plt.plot(shifted_streams[m][1].times(type='utcdatetime'), shifted_streams[m][1].data)
+        plt.plot(trimmed_and_shifted_streams[1].times(type='utcdatetime'), trimmed_and_shifted_streams[1].data, color='red')
+        plt.savefig(station + '_' + event + '_' + phase + '_3-xcorr-data.png')
+        plt.clf()
+        time.sleep(30)  # Allow plotting in parallel threads to finish
 
         # Retain only z component data
         for n, tr in enumerate(trimmed_and_shifted_streams):
@@ -782,7 +809,7 @@ def generate_rotation_xcorr_angles(args):
     # Get data around S phase
     phase = 's'
     reference_station_stream, downsampled_rss, streams, downsampled_streams = \
-        get_data(s_times, [values[parameters.index('reference_station')], station], phase, parameters, values)
+        get_data(event, s_times, [values[parameters.index('reference_station')], station], phase, parameters, values)
 
     # Scale data by polarity
     for tr in reference_station_stream:
@@ -806,13 +833,6 @@ def generate_rotation_xcorr_angles(args):
 
     print('All S-phase seismograms have now been aligned. '
           'Searching now for the optimal cross-correlation windows...')
-
-    plt.plot(reference_station_stream[0].data, linestyle='-', color='b')
-    plt.plot(reference_station_stream[1].data, linestyle='-', color='r')
-    plt.plot(shifted_streams[0][0].data, linestyle='--', color='b')
-    plt.plot(shifted_streams[0][1].data, linestyle='--', color='r')
-    plt.savefig(shifted_streams[0][0].stats.station + '_' + event + '_shifted_plot.png')
-    plt.clf()
 
     xcorr_window = find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, phase, parameters,
                                      values)
@@ -839,6 +859,24 @@ def generate_rotation_xcorr_angles(args):
         trimmed_reference_stream.trim(starttime=window_start,
                                       endtime=window_end)
 
+        # Show xcorr window over trimmed and shifted data
+
+        plt.subplot(411)
+        plt.plot(reference_station_stream[0].times(type='utcdatetime'), reference_station_stream[0].data)
+        plt.plot(trimmed_reference_stream[0].times(type='utcdatetime'), trimmed_reference_stream[0].data, color='red')
+        plt.subplot(412)
+        plt.plot(reference_station_stream[1].times(type='utcdatetime'), reference_station_stream[1].data)
+        plt.plot(trimmed_reference_stream[1].times(type='utcdatetime'), trimmed_reference_stream[1].data, color='red')
+        plt.subplot(413)
+        plt.plot(shifted_streams[m][0].times(type='utcdatetime'), shifted_streams[m][0].data)
+        plt.plot(trimmed_and_shifted_streams[0].times(type='utcdatetime'), trimmed_and_shifted_streams[0].data, color='red')
+        plt.subplot(414)
+        plt.plot(shifted_streams[m][1].times(type='utcdatetime'), shifted_streams[m][1].data)
+        plt.plot(trimmed_and_shifted_streams[1].times(type='utcdatetime'), trimmed_and_shifted_streams[1].data, color='red')
+        plt.savefig(station + '_' + event + '_' + phase + '_3-xcorr-data.png')
+        plt.clf()
+        time.sleep(30)  # Allow plotting in parallel threads to finish
+
         # Remove all z component data
         for n, tr in enumerate(trimmed_and_shifted_streams):
             if tr.stats.channel[-1] == 'Z':
@@ -846,14 +884,6 @@ def generate_rotation_xcorr_angles(args):
         for n, tr in enumerate(trimmed_reference_stream):
             if tr.stats.channel[-1] == 'Z':
                 trimmed_reference_stream.pop(n)
-
-        # Plot data for reference
-        plt.plot(trimmed_reference_stream[0].data, linestyle='-', color='b')
-        plt.plot(trimmed_reference_stream[1].data, linestyle='-', color='r')
-        plt.plot(trimmed_and_shifted_streams[0].data, linestyle='--', color='b')
-        plt.plot(trimmed_and_shifted_streams[1].data, linestyle='--', color='r')
-        plt.savefig(shifted_streams[m][0].stats.station + '_' + event + '_trimmed_and_shifted_plot.png')
-        plt.clf()
 
         # Calculate angle
         orientation_angle, xcorr_values = find_rotation_angle(trimmed_and_shifted_streams,
@@ -922,6 +952,8 @@ if __name__ == "__main__":
                 site_polarity_xcorr_values[o] += xcorr_values[o]
 
         print('Number of events used for polarity determination is ' + str(nevents))
+        plt.scatter([-1, 1], site_polarity_xcorr_values)
+        plt.savefig(stations_to_orient[m] + '_p_xcorr-values.png')
 
         # Give value from all data
         max_xcorr_value = max(site_polarity_xcorr_values)
@@ -961,12 +993,12 @@ if __name__ == "__main__":
             for o in range(len(xcorr_values)):
                 site_rotation_xcorr_values[o] += xcorr_values[o]
             plt.scatter(list(range(len(xcorr_values))), xcorr_values)
-            plt.savefig(station + '_' + event + '_xcorr_values.png')
+            plt.savefig(station + '_' + event + '_4-xcorr-values.png')
             plt.clf()
 
         print('Number of events used for rotation determination is ' + str(nevents))
         plt.scatter(list(range(0, 360)), site_rotation_xcorr_values)
-        plt.savefig(stations_to_orient[m] + '_xcorr_values.png')
+        plt.savefig(stations_to_orient[m] + '_s_xcorr-values.png')
 
         # Give value from all data
         max_xcorr_value = max(site_rotation_xcorr_values)
