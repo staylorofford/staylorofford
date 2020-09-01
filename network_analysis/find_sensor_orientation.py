@@ -139,7 +139,7 @@ def find_lag_time(stream, reference_stream, phase):
     xcorr_values = []
     ref_envelope = ref_envelope.filled(0).tolist() + len(stream_envelope) * [0]
     ref_envelope = np.asarray(
-        smooth_data(ref_envelope, int(round(1/float(values[parameters.index('upper_frequency')])))))
+        smooth_data(ref_envelope, int(round(1/float(values[parameters.index('lower_frequency')])))))
     for m in range(2 * len(stream_envelope)):
 
         # Shift the stream
@@ -149,7 +149,7 @@ def find_lag_time(stream, reference_stream, phase):
             shifted_stream_envelope = max(0, len(stream_envelope) - m) * [0] + \
                                       stream_envelope[:len(stream_envelope) - m].filled(0).tolist() + m * [0]
         shifted_stream_envelope = np.asarray(
-            smooth_data(shifted_stream_envelope, int(round(1/float(values[parameters.index('upper_frequency')])))))
+            smooth_data(shifted_stream_envelope, int(round(1/float(values[parameters.index('lower_frequency')])))))
 
         # Perform cross-correlation
         try:
@@ -546,8 +546,8 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
             shifted_stream_total_energy_waveform, int(round(1/float(values[parameters.index('lower_frequency')])))))
         # Initiate one loop to work through each possible start time in the waveform
         normalised_xcorr_values = [0] * len(shifted_stream_total_energy_waveform)
-        window_length = ((int(values[parameters.index(phase + '_window')]) - 10) *
-                         int(shifted_downsampled_streams[m][0].stats.sampling_rate))
+        window_length = int(round(((int(values[parameters.index(phase + '_window')])) / 2 *
+                                   int(shifted_downsampled_streams[m][0].stats.sampling_rate))))
         for n in range(nandices[0], len(shifted_stream_total_energy_waveform) - window_length):
             if nandices[1] and n > nandices[1]:  # Don't do cross-correlation past the data
                 break
