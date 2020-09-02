@@ -421,7 +421,10 @@ def get_data(event, arrival_times, query_stations, phase, parameters, values):
         # Resample a copy of the stream to twice the corner frequency
         downsampled_station_stream = station_stream.copy()
         for trace in downsampled_station_stream:
-            trace.resample(int(2 * round(1/float(values[parameters.index('upper_frequency')]))))
+            if float(values[parameters.index('upper_frequency')]) > 1:
+                trace.resample(int(2 * float(values[parameters.index('upper_frequency')])))
+            else:
+                trace.resample(int(2 * round(1/float(values[parameters.index('upper_frequency')]))))
             min_times.append(trace.stats.starttime)
             max_times.append(trace.stats.endtime)
 
