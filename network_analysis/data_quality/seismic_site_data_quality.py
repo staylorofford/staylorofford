@@ -15,9 +15,11 @@ import multiprocessing
 import numpy as np
 from obspy.clients.fdsn import Client
 from obspy.clients.fdsn.header import FDSNNoDataException
+from obspy.signal import PPSD
 from obspy.core.stream import Stream
 from obspy.core.utcdatetime import UTCDateTime
 from obspy import read
+from os.path import isfile
 from os import remove
 import pandas as pd
 import pycurl
@@ -48,6 +50,25 @@ def calculate_noise(data, filter_type, minimum_frequency, maximum_frequency, sta
         data = data.filter(type=filter_type,
                            freqmin=minimum_frequency,
                            freqmax=maximum_frequency)
+
+    # Build probabilistic power spectral density objects for each trace
+
+    client = Client("https://service.geonet.org.nz")
+    try:
+        metadata = client.get_stations(network='NZ',
+                                       station=data.stats.station,
+                                       location=data.stats.location,
+                                       channel=data.stats.channel,
+                                       starttime=UTCDateTime(starttime),
+                                       endtime=UTCDateTime(endtime),
+                                       level='response')
+        ppsd = PPSD(data.stats, metadata)
+        ppsd.add(data)
+        ppsd.save_npz(data.stats.station + '_' + data.stats.location + '_' + data.stats.channel + '_' +
+                      starttime.isoformat() + '_PPSD.npz')
+    except FDSNNoDataException:
+        # When no response data exists, do not generate the PPSD
+        pass
 
     # Scale data into nm/s
     gain = query_gain(data.stats.station, data.stats.location, data.stats.channel, starttime, endtime)
@@ -219,7 +240,7 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
                       longitude + ',' +
                       starttime.isoformat() + ',' +
                       endtime.isoformat() + ',' +
-                      filter_type + ',' +
+                      str(filter_type) + ',' +
                       str(minimum_frequency) + ',' +
                       str(maximum_frequency) + ',' +
                       str(np.nan) + '\n')
@@ -232,6 +253,9 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
         possible_keys = create_miniseed_key_list([site_code], [location_code], [channel_code], starttime, endtime)
         files = []
         for file_key in possible_keys:
+            if isfile(file_key.split('/')[-1]):
+                files.append(file_key.split('/')[-1])
+                continue
             try:
                 client.download_file('geonet-archive',
                                      file_key,
@@ -264,7 +288,7 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
                                       starttime, endtime)
                 RMSs.append(RMS)
                 times.append([data_chunk.stats.starttime, data_chunk.stats.endtime])
-            remove(file)
+            # remove(file)
 
         if len(RMSs) == 0:
             print('There was no data, moving onto next station.')
@@ -278,7 +302,7 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
                       longitude + ',' +
                       starttime.isoformat() + ',' +
                       endtime.isoformat() + ',' +
-                      filter_type + ',' +
+                      str(filter_type) + ',' +
                       str(minimum_frequency) + ',' +
                       str(maximum_frequency) + ',' +
                       str(np.nan) + '\n')
@@ -298,7 +322,7 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
                            longitude + ',' +
                            time[0].isoformat() + ',' +
                            time[1].isoformat() + ',' +
-                           filter_type + ',' +
+                           str(filter_type) + ',' +
                            str(minimum_frequency) + ',' +
                            str(maximum_frequency) + ',' +
                            str(RMSs[idx])[:6] + '\n')
@@ -313,10 +337,10 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
 # in the data quality calculations. The station codes should be in the first column of this file, and the location
 # code can be in any other column so long as the file header specifies which by the location of the "Location" string
 # in the header.
-site_file = '/home/samto/git/delta/network/sites.csv'
+site_file = '/home/samto/PROCESSING/sites.csv'
 
 # Give parameters for which data to query
-channel_codes = ['EHZ', 'HHZ']  # Channel code(s) to query, if only one is desired have a list with one entry
+channel_codes = ['HHZ']  # Channel code(s) to query, if only one is desired have a list with one entry
 starttime = '2019-01-01T00:00:00Z'  # starttime can either be an ISO8601 string, or an integer number of seconds to
                                     # query data for before the endtime.
 endtime = '2019-12-31T23:59:59Z'  # endtime can be an ISO8601 string or 'now', if 'now' then endtime
@@ -333,7 +357,7 @@ user = 'arn:aws:iam::582058524534:mfa/samto'
 duration = 43200
 
 # Set how to filter the data, if at all. Use filter_type=None to negate filtering. Filter types are those in obspy.
-filter_type = 'bandpass'
+filter_type = None
 minimum_frequency = 2
 maximum_frequency = 15
 
@@ -377,7 +401,7 @@ else:
 # Pump parameters into parallel processing pool and do data quality calculation
 
 # Prepare the workers for parallel processing
-pp_pool = multiprocessing.Pool(25)
+pp_pool = multiprocessing.Pool(3)
 
 jobs = []
 
@@ -453,7 +477,7 @@ with open('seismic_site_data_quality_summary.csv', 'a') as outfile:
             outfile.write(entries[n] + ',' +
                           starttime.isoformat() + ',' +
                           endtime.isoformat() + ',' +
-                          filter_type + ',' +
+                          str(filter_type) + ',' +
                           str(minimum_frequency) + ',' +
                           str(maximum_frequency) + ',' +
                           str(completenesses[n]) + ',' +
