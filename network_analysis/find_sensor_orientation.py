@@ -549,13 +549,12 @@ def find_xcorr_window(shifted_downsampled_streams, downsampled_rss, nandices, ph
             shifted_stream_total_energy_waveform, int(round(1/float(values[parameters.index('lower_frequency')])))))
         # Initiate one loop to work through each possible start time in the waveform
         normalised_xcorr_values = [0] * len(shifted_stream_total_energy_waveform)
-        window_length = int(round(((int(values[parameters.index(phase + '_window')])) / 2 *
+        window_length = int(round(((int(values[parameters.index(phase + '_window')])) / 5 *
                                    int(shifted_downsampled_streams[m][0].stats.sampling_rate))))
         for n in range(nandices[0], len(shifted_stream_total_energy_waveform) - window_length):
             if nandices[1] and n > nandices[1]:  # Don't do cross-correlation past the data
                 break
-            #  Investigate each search window  at least 1 of the phase search windows long after the current n
-            #  (minus 10 seconds on either due to trimming post-filtering).
+            #  Investigate each search window  at least 1/5 of the phase search windows long after the current n
             o = n + window_length
             if nandices[1] and o > nandices[1]:  # Don't do cross-correlation past the data
                 break
@@ -815,10 +814,6 @@ def generate_rotation_xcorr_angles(args):
         get_data(event, s_times, [values[parameters.index('reference_station')], station], phase, parameters, values)
 
     # Scale data by polarity
-    for tr in reference_station_stream:
-        tr.data *= polarity
-    for tr in downsampled_rss:
-        tr.data *= polarity
     for stream in streams:
         for tr in stream:
             tr.data *= polarity
