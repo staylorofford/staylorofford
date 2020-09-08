@@ -46,7 +46,7 @@ def calculate_noise(data, filter_type, minimum_frequency, maximum_frequency, sta
     """
 
     # Apply a filter to the data
-    if filter_type:
+    if filter_type != 'None':
         data = data.filter(type=filter_type,
                            freqmin=minimum_frequency,
                            freqmax=maximum_frequency)
@@ -253,9 +253,9 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
         possible_keys = create_miniseed_key_list([site_code], [location_code], [channel_code], starttime, endtime)
         files = []
         for file_key in possible_keys:
-            if isfile(file_key.split('/')[-1]):
-                files.append(file_key.split('/')[-1])
-                continue
+            # if isfile(file_key.split('/')[-1]):
+            #     files.append(file_key.split('/')[-1])
+            #     continue
             try:
                 client.download_file('geonet-archive',
                                      file_key,
@@ -330,6 +330,7 @@ def data_quality(site_code, location_code, channel_code, latitude, longitude, st
             print('Data quality calculation complete for data from site ' + site_code + ' location code ' +
                   location_code + ' channel code ' + channel_code + ' over time ' + starttime.isoformat() + ' - ' +
                   endtime.isoformat())
+            print(outstr)
             return outstr
 
 
@@ -343,7 +344,7 @@ site_file = '/home/samto/PROCESSING/sites.csv'
 channel_codes = ['HHZ']  # Channel code(s) to query, if only one is desired have a list with one entry
 starttime = '2019-01-01T00:00:00Z'  # starttime can either be an ISO8601 string, or an integer number of seconds to
                                     # query data for before the endtime.
-endtime = '2019-12-31T23:59:59Z'  # endtime can be an ISO8601 string or 'now', if 'now' then endtime
+endtime = '2019-01-02T23:59:59Z'  # endtime can be an ISO8601 string or 'now', if 'now' then endtime
                                   # will be set to the current UTC time. If using S3 data_source, make endtime at least
                                   # 1 second into the final day of data you want to use.
 
@@ -356,8 +357,8 @@ role = 'arn:aws:iam::862640294325:role/tf-sod-team-s3-read-role'
 user = 'arn:aws:iam::582058524534:mfa/samto'
 duration = 43200
 
-# Set how to filter the data, if at all. Use filter_type=None to negate filtering. Filter types are those in obspy.
-filter_type = None
+# Set how to filter the data, if at all. Use filter_type = 'None' to negate filtering. Filter types are those in obspy.
+filter_type = 'None'
 minimum_frequency = 2
 maximum_frequency = 15
 
