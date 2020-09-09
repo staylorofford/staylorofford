@@ -4,10 +4,10 @@ Intention is to integrate this script and seismic_site_data_quality.py once both
 """
 
 from obspy.clients.fdsn import Client
-from obspy.signal import PPSD
 from obspy.core.utcdatetime import UTCDateTime
+from obspy.imaging.cm import pqlx
+from obspy.signal import PPSD
 from glob import glob
-import numpy as np
 
 
 def get_metadata(filename):
@@ -99,4 +99,10 @@ for n, site in enumerate(unique_sites):
             # Sort data by time
             all_ppsd._times_processed, all_ppsd._binned_psds = zip(*sorted(zip(all_ppsd._times_processed, all_ppsd._binned_psds)))
             # Plot PPSD data
-            all_ppsd.plot()
+            all_ppsd.plot(filename=site + '_' + location + '_' + channel + '_PPSD.png',
+                          show_coverage=True,
+                          show_noise_models=True,
+                          xaxis_frequency=True,
+                          cmap=pqlx,
+                           show=False)
+            all_ppsd.plot_spectrogram(filename=site + '_' + location + '_' + channel + '_spectrogram.png', show=False)
