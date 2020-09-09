@@ -4,10 +4,10 @@ Intention is to integrate this script and seismic_site_data_quality.py once both
 """
 
 from obspy.clients.fdsn import Client
-from obspy.clients.fdsn.header import FDSNNoDataException
 from obspy.signal import PPSD
 from obspy.core.utcdatetime import UTCDateTime
 from glob import glob
+import numpy as np
 
 
 def get_metadata(filename):
@@ -57,10 +57,12 @@ for n, site in enumerate(unique_sites):
     for m, location in enumerate(locations):
         for l, channel in enumerate(channels):
             if sites[l] == site and locations[l] == location:
-                site_location_channels[site_locations.index(location)].append(channel)
+                if channel not in site_location_channels[site_locations.index(location)]:
+                    site_location_channels[site_locations.index(location)].append(channel)
     unique_site_channel_locations.append(site_location_channels)
 
 # Parse PPSD data
+parsed_files = []
 for n, site in enumerate(unique_sites):
     for m, location in enumerate(unique_site_locations[n]):
         for l, channel in enumerate(unique_site_channel_locations[n][m]):
@@ -70,12 +72,31 @@ for n, site in enumerate(unique_sites):
                 filename = filepath.split('/')[-1]
                 if (filename.split('_')[0] == site and
                         filename.split('_')[1] == location and
-                        filename.split('_')[2] == channel):
+                        filename.split('_')[2] == channel and
+                        filepath not in parsed_files):
+                    parsed_files.append(filepath)
                     metadata = get_metadata(filename)
                     if num == 0:
-                        ppsd = PPSD.load_npz(filepath, metadata)
+                        all_ppsd = PPSD.load_npz(filepath, metadata)
+                        min_td = all_ppsd._times_data[0][0]
+                        max_td = all_ppsd._times_data[0][1]
                         num += 1
                     else:
-                        ppsd.load_npz(filepath, metadata)
-        # Plot PPSD data
-        ppsd.plot()
+                        ppsd = PPSD.load_npz(filepath, metadata)
+                        # Merge PPSDs across all time
+                        # To do this, extend one PPSD's data lists by those of all others
+                        # (this is done by tweaking attribute values of obspy PPSD objects - a tricky business!)
+                        # NOTE: assumption is that processing parameters are the same between PPSDs!
+                        all_ppsd._times_processed.extend(ppsd._times_processed)
+                        all_ppsd._binned_psds.extend(ppsd._binned_psds)
+                        all_ppsd._times_gaps.extend(ppsd._times_gaps)
+                        if ppsd._times_data[0][0] < min_td:
+                            min_td = ppsd._times_data[0][0]
+                        if ppsd._times_data[0][1] > max_td:
+                            max_td = ppsd._times_data[0][1]
+            # Update time window of data
+            all_ppsd._times_data = [[min_td, max_td]]
+            # Sort data by time
+            all_ppsd._times_processed, all_ppsd._binned_psds = zip(*sorted(zip(all_ppsd._times_processed, all_ppsd._binned_psds)))
+            # Plot PPSD data
+            all_ppsd.plot()
