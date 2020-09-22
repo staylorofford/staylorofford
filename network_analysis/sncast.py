@@ -36,8 +36,8 @@ import geopandas as gpd
 import pandas as pd
 
 
-def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=1,
-          dlat=1, stat_num=10, snr=3, foc_depth=10, mag_min=2.0, mag_delta=0.1):
+def minML(filename, dir_in='./', lon0=173.5, lon1=174.5, lat0=-39.6, lat1=-39.0, dlon=0.01,
+          dlat=0.01, stat_num=10, snr=3, foc_depth=0, mag_min=0, mag_delta=0.1):
 
     """
     This routine calculates the geographic distribution of the minimum 
@@ -80,11 +80,7 @@ def minML(filename, dir_in='./', lon0=165, lon1=185, lat0=-50, lat1=-30, dlon=1,
     ny = int((lat1 - lat0) / dlat) + 1
     # open output file:
 
-    f = open('%s%s-stat%s-foc%s-snr%s.grd' %(dir_in,
-                                                filename,
-                                                stat_num,
-                                                foc_depth,
-                                                snr), 'wb')
+    f = open('dataout.grd', 'wb')
     mag = []
     import re
     for ix in range(nx):  # Loop through longitude increments
@@ -126,7 +122,7 @@ def PlotminML(filename):
     x = DAT.iloc[:, 0].values
     y = DAT.iloc[:, 1].values
     z = DAT.iloc[:, 2].values
-    # DAT = pd.read_csv(filename, sep=",", header=1)
+    # DAT = pd.read_csv(filename, sep=",", header=None)
     # x = DAT.iloc[:, 3].values
     # y = DAT.iloc[:, 4].values
     # z = DAT.iloc[:, -2].values
@@ -147,15 +143,6 @@ def PlotminML(filename):
 
     fig, ax = plt.subplots(figsize=(13, 8))
     cm = plt.cm.get_cmap('inferno_r')
-    # cm = plt.cm.get_cmap('inferno')
-
-    # zmax= max(z)
-    # colors = []
-    # for n in range(len(z)):
-    #     z[n] /= zmax
-    #     colors.append(cm(z[n]))
-    # plt.scatter(x, y, c=colors, cmap=cm, edgecolors='white', linewidths=0.2,
-    #             s=10, alpha=0.8, zorder=4)
 
     mesh = ax.pcolormesh(X, Y, Z, cmap=cm, zorder=1)
     CS = ax.contour(X, Y, Z, linewidths=1)
@@ -163,20 +150,35 @@ def PlotminML(filename):
     ax.grid(color='k', alpha=0.2, zorder=2)
     cb = fig.colorbar(mesh)
     cb.set_label('magnitude', labelpad=15, fontsize=12, rotation=270)
+
+    # cm = plt.cm.get_cmap('jet')
+    # zmax= max(z)
+    # colors = []
+    # for n in range(len(z)):
+    #     z[n] /= zmax
+    #     colors.append(cm(z[n]))
+    # plt.scatter(x, y, c=colors, cmap=cm, edgecolors='black', linewidths=0.2,
+    #             s=20, alpha=1, zorder=4)
+    # plt.set_cmap('jet')
+    # cb = plt.colorbar()
+    # cb.set_ticks(cb.get_ticks())
+    # cb.set_ticklabels(ticklabels=[int(round(tickvalue * zmax)) for tickvalue in cb.get_ticks()],
+    #                   update_ticks=True)
     # cb.set_label('RMS (nm/s)', labelpad=15, fontsize=12, rotation=270)
 
     return fig, ax
 
 
 # Calculate SN-CAST data
-minML('datain.csv', foc_depth=10)
+fd = 0
+minML('mod_datain.csv', foc_depth=fd)
 
 # Plot SN-CAST data
-fig, ax = PlotminML('datain.csv-stat10-foc10-snr3.grd')
+fig, ax = PlotminML('dataout.grd')
 # fig, ax = PlotminML('datain.csv')
 
 # Plot reference data
-station_metadata = pd.read_csv('datain.csv', header=1)
+station_metadata = pd.read_csv('mod_datain.csv', header=1)
 station_metadata.columns = ['Station', 'Location', 'Channel', 'Longitude', 'Latitude', 'Starttime', 'Endtime', 'Filter',
                             'Freqmin', 'Freqmax', 'Completeness', 'RMS', 'MLR Correction']
 outlines = gpd.read_file('./shapefiles/nz-coastlines-and-islands-polygons-topo-150k.shp')
@@ -197,6 +199,7 @@ plt.ylim([-50, -30])
 plt.xlabel('longitude', labelpad=10, fontsize=12)
 plt.ylabel('latitude', rotation=90, labelpad=10, fontsize=12)
 plt.title('SN-CAST: theoretical lowest magnitude of detection in New Zealand,\n' +
-          'focal depth: 5 km, number of detections: 10, SNR for detection: 3',
+          'focal depth: ' + str(fd) + ' km, number of detections: 10, SNR for detection: 3',
           y=1.03)
-plt.savefig('sncast.png', dpi=300)
+# plt.savefig('sncast.png', dpi=300)
+plt.show()
