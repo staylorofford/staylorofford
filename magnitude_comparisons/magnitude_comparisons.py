@@ -3,6 +3,7 @@ Compare earthquake magnitudes within or between their representations in earthqu
 """
 
 import datetime
+import earthquake_location
 import glob
 from io import BytesIO
 import math
@@ -14,12 +15,6 @@ import pycurl
 from scipy.stats import gmean
 from scipy.odr import Model, Data, ODR
 import time
-
-# Import my Python functions
-import sys
-sys.path.append('/home/samto/git/staylorofford/duty_tools/earthquake-location/')
-print(sys.path)
-import earthquake_location
 
 quakeml_reader = Unpickler()
 
@@ -118,14 +113,14 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                           ' and ' + str(time_ranges[i]))
 
                     queryresult = curl(query)
-                    if "Sorry, but your request cannot be processed at the present time." in queryresult.decode('ascii'):
+                    if "Sorry, but your request cannot be processed at the present time." in queryresult.decode('utf-8'):
                         # Wait a minute, then try again with the same query
                         print('Got \"Sorry, but your request cannot be processed at the present time.\" message. Waiting '
                               'one minute and trying again.')
                         print('Error time: ' + str(datetime.datetime.now()))
                         time.sleep(60)
                         continue
-                    elif "Please try again in about 30 seconds." in queryresult.decode('ascii'):
+                    elif "Please try again in about 30 seconds." in queryresult.decode('utf-8'):
                         # Wait a minute, then try again with the same query
                         print('Got \"Please try again in about 30 seconds.\" Will try again in one minute.')
                         print('Error time: ' + str(datetime.datetime.now()))
@@ -318,7 +313,7 @@ def GeoNet_Mw(minmagnitude, starttime, endtime):
 
     print('\nBuilding GeoNet Mw timeseries')
     URL = "https://raw.githubusercontent.com/GeoNet/data/master/moment-tensor/GeoNet_CMT_solutions.csv"
-    result = curl(URL).decode('ascii')
+    result = curl(URL).decode('utf-8')
     print("")
 
     datalist = [[] for i in range(7)]
@@ -492,8 +487,13 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                 # Find matches and load data into datalist
                 # Go through all the entries for the nth magnitude type
                 for k in range(len(magnitude_timeseries[0][n])):
-                    event_index = event_list.index(magnitude_timeseries[0][n][k])
-                    # Go through all the entries for the mth magnitude type
+                    try:
+                        event_index = event_list.index(magnitude_timeseries[0][n][k])
+                    except ValueError:
+                        # For whatever reason, the event does not exist in the event list
+                        continue
+
+                    # Go through all the entires for the mth magnitude type
                     for l in range(len(magnitude_timeseries[0][m])):
                         # Match based on eventID
                         if magnitude_timeseries[0][n][k] == magnitude_timeseries[0][m][l]:
@@ -755,12 +755,14 @@ def do_plotting(datalist, m, n, data_types, description=None, regression_pairs=N
 
     # Plot data
     cm = plt.cm.get_cmap('RdYlBu_r')
+    colorbar = False
     for l in range(len(x_vals)):
         colors = []
         for k in range(len(binned_ycounts[l])):
             colors.append(cm(binned_ycounts[l][k]))
         plt.scatter([x_vals[l]] * len(binned_yvals[l]), binned_yvals[l], c=colors, s=10, cmap=cm)
-        if 1 in binned_ycounts[l]:
+        if 1 in binned_ycounts[l] and colorbar is False:
+            colorbar = True
             plt.set_cmap('RdYlBu_r')
             cb = plt.colorbar()
             cb.set_ticks(cb.get_ticks())
@@ -848,10 +850,10 @@ def do_plotting(datalist, m, n, data_types, description=None, regression_pairs=N
 
 # Set data gathering parameters
 
-minmagnitude = 6  # minimum event magnitude to get from catalog
+minmagnitude = 3  # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -90, 90  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 0, -0.001  # western and eastern longitude for event search window
-starttime = '1800-01-01T00:00:00Z'  # event query starttime
+starttime = '2012-01-01T00:00:00Z'  # event query starttime
 endtime = '2021-01-01T00:00:00Z' #'2020-03-01T00:00:00'  # event query endtime, 'now' will set it to the current time
 
 if endtime == 'now':
@@ -862,10 +864,10 @@ if endtime == 'now':
 
 catalog_names = ['GeoNet_catalog', 'USGS_catalog']
 # catalog_names = ['ISC_catalog']
-# catalog_names = ['USGS_catalog', 'ISC_catalog']
+# catalog_names = ['USGS_catalog']
 services = ["https://service.geonet.org.nz/fdsnws/event/1/", "https://earthquake.usgs.gov/fdsnws/event/1/"]
 # services = ['isc']
-# services = ['https://earthquake.usgs.gov/fdsnws/event/1/', 'isc']
+# services = ['https://earthquake.usgs.gov/fdsnws/event/1/']
 
 catalogs = [[] for i in range(len(catalog_names))]
 
@@ -877,14 +879,14 @@ catalogs = [[] for i in range(len(catalog_names))]
 # you will need to repeat its details as both the comparison and reference catalogs.
 
 # comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
-comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['Mw']]
-# comparison_magnitudes = [['mww'], ['mb', 'mB', 'MS', 'MW']]
+comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']]
+# comparison_magnitudes = [['mww']]
 
 # Set which magnitude type pairs to do orthogonal regression for
-regression_pairs = [['mB', 'unified_Mw'], ['MLv', 'unified_Mw']]
-regression_limits = [[5.3, 9], [3, 9]]
-# regression_pairs = None
-# regression_limits = None
+# regression_pairs = [['mB', 'unified_Mw'], ['MLv', 'unified_Mw']]
+# regression_limits = [[5.3, 9], [3, 9]]
+regression_pairs = None
+regression_limits = None
 
 # Set matching parameters
 
