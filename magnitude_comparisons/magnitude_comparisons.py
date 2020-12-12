@@ -9,14 +9,76 @@ from io import BytesIO
 import math
 import matplotlib.pyplot as plt
 import numpy as np
+from obspy.clients.fdsn import Client
+from obspy.taup import TauPyModel
 from obspy.io.quakeml.core import Unpickler
 import os
 import pycurl
 from scipy.stats import gmean
 from scipy.odr import Model, Data, ODR
 import time
+import xml.etree.ElementTree as ET
 
 quakeml_reader = Unpickler()
+spherical_velocity_model = TauPyModel(model="iasp91")
+
+
+def FDSN_station_query(station, service):
+
+    """
+    Use pycurl to query station details via FDSN.
+
+    :param station: station site code
+    :return: station latitude (dec. deg.), longitude (dec. deg.), and depth (+ve direction is down, in m)
+    """
+
+    # Query station information
+    query = 'https://service.geonet.org.nz/fdsnws/station/1/query?station=' + \
+            station # hardcoded service; needs reworking throughout
+    queryresult = curl(query)
+
+    # Parse station information
+    root = ET.fromstring(queryresult.decode('utf-8'))
+    latitude = float(root[4][3][2].text)
+    longitude = float(root[4][3][3].text)
+    depth = -1 * float(root[4][3][4].text)
+
+    return latitude, longitude, depth
+
+
+def query_fdsn(service, station, location, channel, starttime, endtime):
+
+    """
+    Query FDSN for timeseries data. Input parameter can be specific or include ? wildcard
+    :param: station: site code to get data from (string)
+    :param: location: location code to get data from (string)
+    :param: channel: channel code to get data from (string)
+    :param: starttime: UTC start time of desired data (ISO8601 string)
+    :param: endtime: UTC end time of desired data (ISO8601 string)
+    :return: obspy stream object containing requested data
+    """
+
+    client = Client('GEONET')  # hardcoded service; needs reworking throughout
+    stream = client.get_waveforms(station=station,
+                                  network='NZ',  # also hardcoded
+                                  channel=channel,
+                                  location=location,
+                                  starttime=starttime,
+                                  endtime=endtime)
+    return stream
+
+
+def calculate_magnitude(stream, magnitude_type):
+
+    if magnitude_type == 'mB' or magnitude_type == 'Mw(mB)':
+        stream.filter('bandpass', freqmin=1, freqmax=2)
+        magnitude = max(stream.data)
+    elif magnitude_type == 'MLv':
+        stream.filter('bandpass', freqmin=1, freqmax=2)
+        magnitude = max(stream.data)
+    if magnitude_type == 'Mw(mB)':
+        magnitude = magnitude
+    return magnitude
 
 
 def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude, catalog_name,
@@ -201,6 +263,60 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                 catalog = quakeml_reader.loads(entry.encode('utf-8'))
                 events = catalog.events
                 print('Current catalog has ' + str(len(events)) + ' events')
+
+                # If desired, calculate missing magnitudes for mB, MLv, Mw(mB) magnitude types
+                calculate_magnitudes = True
+                if calculate_magnitudes:
+                    for event in events:
+                        # Create theoretical S wave arrivals
+                        hypocentre = [event.origins[0].latitude,
+                                      event.origins[0].longitude,
+                                      event.origins[0].depth]
+                        origin_time = event.origins[0].time
+                        picks = event.picks
+                        for pick in picks:
+                            if pick.phase_hint == 'P':
+                                p_tt = pick.time
+                            else:
+                                continue
+                            station = pick.waveform_id.station_code
+                            location = pick.waveform_id.location_code
+                            channel = pick.waveform_id.channel_code
+                            station_location = FDSN_station_query(station, service)
+                            # Calculate epicentral distance in degrees
+                            delta = math.degrees(2 * (math.asin(((math.sin(1 / 2 * math.radians(abs(hypocentre[0] -
+                                                                                                    station_location[
+                                                                                                        0])))) ** 2 +
+                                                                 math.cos(math.radians(hypocentre[0])) *
+                                                                 math.cos(math.radians(station_location[0])) *
+                                                                 (math.sin(1 / 2 * math.radians(abs(hypocentre[1] -
+                                                                                                    station_location[
+                                                                                                        1])))) ** 2) **
+                                                                (1 / 2))))
+                            if delta > 5:  # Hardcode conditions for mB
+                                # Calculate theoretical travel times
+                                arrivals = spherical_velocity_model.get_travel_times(
+                                    source_depth_in_km=hypocentre[2] / 1000.0,
+                                    receiver_depth_in_km=max(
+                                        0.0, (station_location[2] / 1000.0)),
+                                    distance_in_degree=delta,
+                                    phase_list=['s', 'S'])
+                                # Extract travel times
+                                s_tt = None
+                                for arrival in arrivals:
+                                    if arrival.name == 's' or arrival.name == 'S' and s_tt is None:
+                                        s_tt = origin_time + arrival.time
+                            else:
+                                continue
+
+                            # Set times for data querying
+                            st = p_tt
+                            et = s_tt - datetime.timedelta(seconds=(s_tt - p_tt) / 10)
+
+                            # Get data for magnitude calculation
+                            waveform = query_fdsn(service, station, location, channel, st, et)
+                            print(waveform)
+                            exit()
 
                 # Append new magnitude data to files
                 save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
@@ -850,7 +966,7 @@ def do_plotting(datalist, m, n, data_types, description=None, regression_pairs=N
 
 # Set data gathering parameters
 
-minmagnitude = 3  # minimum event magnitude to get from catalog
+minmagnitude = 7  # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -90, 90  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 0, -0.001  # western and eastern longitude for event search window
 starttime = '2012-01-01T00:00:00Z'  # event query starttime
@@ -879,7 +995,7 @@ catalogs = [[] for i in range(len(catalog_names))]
 # you will need to repeat its details as both the comparison and reference catalogs.
 
 # comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
-comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']]
+comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)'], ['mww']]
 # comparison_magnitudes = [['mww']]
 
 # Set which magnitude type pairs to do orthogonal regression for
@@ -897,11 +1013,11 @@ rms_threshold = 5  # origin time potential matches must be within (in seconds) w
                     # arrival time picks of the other in a spherical Earth grid search.
 
 # Set what level of processing you want the script to do
-build_magnitude_timeseries = False  # Should the script build the magnitude timeseries, or they exist already?
+build_magnitude_timeseries = True  # Should the script build the magnitude timeseries, or they exist already?
 build_GeoNet_Mw_timeseries = False  # Should the script build a magnitude timeseries for the GeoNet Mw catalog?
 gb_plotting = False  # Should the script produce Gutenburg-Richter style plots?
-matching = False  # Should the script match events within and between catalogs?
-mw_merging = True  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
+matching = False # Should the script match events within and between catalogs?
+mw_merging = False  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
 show_matching = False  # Should the script show the operator those events in the match window if matching is performed?
 
 # Build event catalogs from FDSN
