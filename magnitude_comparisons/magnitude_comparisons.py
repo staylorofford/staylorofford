@@ -14,13 +14,33 @@ from obspy.taup import TauPyModel
 from obspy.io.quakeml.core import Unpickler
 import os
 import pycurl
-from scipy.stats import gmean
 from scipy.odr import Model, Data, ODR
+from scipy.stats import gmean
+from scipy.stats import trim_mean
 import time
 import xml.etree.ElementTree as ET
 
 quakeml_reader = Unpickler()
 spherical_velocity_model = TauPyModel(model="iasp91")
+
+# Preliminary, unpublished Q function of Saul & Bormann (2007) from seiscomp3/src/trunk/libs/seiscomp3/seismology/mb.cpp
+qmb = [[0.0, 0.0, 0.0, 5.75, 5.88, 5.96, 6.01, 6.10, 6.14, 6.17, 6.17, 6.16, 6.15, 6.15, 6.10, 6.06, 6.05, 6.04, 6.05, 6.08, 6.11, 6.16, 6.23, 6.30, 6.39, 6.48, 6.55, 6.61, 6.64, 6.66, 6.67, 6.67, 6.67, 6.67, 6.66, 6.66, 6.65, 6.66, 6.66, 6.67, 6.67, 6.69, 6.69, 6.70, 6.71, 6.72, 6.72, 6.73, 6.74, 6.75, 6.76, 6.77, 6.77, 6.78, 6.79, 6.79, 6.80, 6.81, 6.82, 6.82, 6.83, 6.83, 6.84, 6.84, 6.84, 6.85, 6.85, 6.85, 6.86, 6.87, 6.87, 6.87, 6.87, 6.88, 6.88, 6.88, 6.89, 6.89, 6.90, 6.89, 6.89, 6.89, 6.90, 6.92, 6.94, 6.97, 7.01, 7.05, 7.09, 7.15, 7.20, 7.25, 7.31, 7.37, 7.42, 7.46, 7.50, 7.55, 7.59, 7.64, 7.68, 7.73, 7.75, 7.78, 7.78, 7.78, 7.78, 7.78],
+       [0.0, 0.0, 0.0, 5.77, 5.85, 5.92, 5.99, 6.09, 6.16, 6.21, 6.23, 6.22, 6.20, 6.19, 6.15, 6.12, 6.10, 6.11, 6.12, 6.14, 6.17, 6.21, 6.26, 6.33, 6.41, 6.50, 6.57, 6.63, 6.65, 6.68, 6.69, 6.69, 6.69, 6.69, 6.69, 6.69, 6.69, 6.69, 6.68, 6.68, 6.68, 6.68, 6.69, 6.70, 6.71, 6.72, 6.74, 6.74, 6.74, 6.75, 6.75, 6.76, 6.77, 6.77, 6.78, 6.78, 6.78, 6.78, 6.79, 6.79, 6.80, 6.81, 6.81, 6.81, 6.82, 6.82, 6.83, 6.83, 6.83, 6.83, 6.83, 6.83, 6.83, 6.84, 6.84, 6.84, 6.85, 6.85, 6.85, 6.86, 6.86, 6.86, 6.86, 6.88, 6.90, 6.94, 6.98, 7.02, 7.06, 7.12, 7.16, 7.21, 7.26, 7.31, 7.36, 7.41, 7.45, 7.50, 7.54, 7.58, 7.62, 7.65, 7.67, 7.68, 7.68, 7.68, 7.68, 7.68],
+       [0.0, 0.0, 0.0, 5.70, 5.86, 5.92, 5.96, 6.03, 6.10, 6.12, 6.15, 6.17, 6.16, 6.14, 6.13, 6.10, 6.08, 6.10, 6.12, 6.14, 6.16, 6.21, 6.24, 6.32, 6.40, 6.49, 6.54, 6.60, 6.63, 6.66, 6.69, 6.70, 6.69, 6.68, 6.68, 6.65, 6.65, 6.66, 6.66, 6.65, 6.66, 6.65, 6.65, 6.66, 6.68, 6.69, 6.71, 6.73, 6.74, 6.75, 6.76, 6.75, 6.74, 6.74, 6.75, 6.75, 6.76, 6.77, 6.77, 6.76, 6.76, 6.76, 6.76, 6.76, 6.78, 6.77, 6.79, 6.78, 6.78, 6.78, 6.79, 6.78, 6.78, 6.79, 6.79, 6.78, 6.78, 6.78, 6.78, 6.79, 6.79, 6.79, 6.80, 6.81, 6.83, 6.87, 6.92, 6.97, 7.02, 7.07, 7.12, 7.16, 7.21, 7.27, 7.33, 7.38, 7.41, 7.45, 7.49, 7.51, 7.54, 7.56, 7.58, 7.60, 7.60, 7.60, 7.60, 7.60],
+       [0.0, 0.0, 0.0, 5.73, 5.80, 5.82, 5.88, 6.01, 6.10, 6.14, 6.15, 6.14, 6.14, 6.09, 6.04, 6.03, 6.03, 6.03, 6.07, 6.11, 6.13, 6.18, 6.22, 6.27, 6.37, 6.46, 6.53, 6.59, 6.62, 6.64, 6.66, 6.67, 6.67, 6.66, 6.65, 6.63, 6.64, 6.63, 6.63, 6.64, 6.63, 6.63, 6.64, 6.65, 6.66, 6.66, 6.67, 6.69, 6.72, 6.74, 6.75, 6.74, 6.74, 6.72, 6.72, 6.73, 6.72, 6.72, 6.73, 6.72, 6.73, 6.73, 6.74, 6.74, 6.74, 6.73, 6.74, 6.74, 6.74, 6.74, 6.75, 6.75, 6.76, 6.77, 6.78, 6.78, 6.77, 6.76, 6.76, 6.76, 6.74, 6.75, 6.77, 6.79, 6.82, 6.87, 6.93, 6.99, 7.03, 7.08, 7.13, 7.17, 7.21, 7.28, 7.34, 7.39, 7.41, 7.47, 7.53, 7.57, 7.62, 7.63, 7.64, 7.64, 7.64, 7.64, 7.64, 7.64],
+       [0.0, 0.0, 0.0, 5.67, 5.73, 5.73, 5.83, 5.96, 6.02, 6.10, 6.20, 6.18, 6.15, 6.10, 6.05, 6.03, 6.01, 6.03, 6.05, 6.09, 6.10, 6.14, 6.19, 6.25, 6.33, 6.43, 6.50, 6.56, 6.59, 6.61, 6.61, 6.61, 6.60, 6.59, 6.57, 6.57, 6.57, 6.57, 6.56, 6.59, 6.58, 6.59, 6.59, 6.60, 6.59, 6.60, 6.60, 6.60, 6.61, 6.63, 6.65, 6.66, 6.67, 6.67, 6.67, 6.67, 6.68, 6.68, 6.68, 6.66, 6.66, 6.66, 6.66, 6.66, 6.66, 6.66, 6.65, 6.65, 6.66, 6.66, 6.68, 6.68, 6.69, 6.69, 6.69, 6.70, 6.70, 6.70, 6.71, 6.71, 6.71, 6.72, 6.73, 6.75, 6.77, 6.82, 6.86, 6.92, 6.98, 7.03, 7.07, 7.12, 7.17, 7.22, 7.27, 7.32, 7.34, 7.38, 7.42, 7.47, 7.51, 7.54, 7.54, 7.56, 7.56, 7.56, 7.56, 7.56],
+       [0.0, 0.0, 0.0, 5.64, 5.68, 5.70, 5.78, 5.90, 5.98, 6.03, 6.08, 6.03, 5.94, 5.88, 5.91, 5.92, 5.95, 6.00, 6.03, 6.04, 6.06, 6.09, 6.12, 6.18, 6.24, 6.33, 6.41, 6.47, 6.52, 6.51, 6.51, 6.49, 6.48, 6.45, 6.45, 6.45, 6.46, 6.46, 6.46, 6.47, 6.46, 6.46, 6.46, 6.47, 6.47, 6.50, 6.50, 6.52, 6.51, 6.52, 6.53, 6.53, 6.52, 6.54, 6.55, 6.55, 6.56, 6.56, 6.56, 6.55, 6.56, 6.56, 6.57, 6.56, 6.57, 6.57, 6.56, 6.56, 6.57, 6.57, 6.58, 6.59, 6.59, 6.59, 6.60, 6.60, 6.61, 6.62, 6.63, 6.63, 6.64, 6.65, 6.66, 6.68, 6.71, 6.75, 6.78, 6.84, 6.89, 6.94, 6.99, 7.04, 7.10, 7.14, 7.20, 7.27, 7.30, 7.33, 7.38, 7.42, 7.46, 7.49, 7.51, 7.53, 7.53, 7.53, 7.53, 7.53],
+       [0.0, 0.0, 0.0, 5.49, 5.50, 5.56, 5.68, 5.76, 5.86, 5.85, 5.84, 5.73, 5.70, 5.68, 5.75, 5.77, 5.84, 5.89, 5.96, 5.94, 5.97, 6.01, 6.07, 6.13, 6.22, 6.29, 6.34, 6.38, 6.42, 6.41, 6.41, 6.40, 6.38, 6.35, 6.35, 6.36, 6.36, 6.37, 6.38, 6.39, 6.38, 6.37, 6.35, 6.34, 6.35, 6.37, 6.38, 6.41, 6.40, 6.41, 6.42, 6.42, 6.42, 6.44, 6.44, 6.42, 6.44, 6.44, 6.44, 6.46, 6.48, 6.47, 6.47, 6.45, 6.43, 6.43, 6.42, 6.43, 6.46, 6.47, 6.47, 6.49, 6.50, 6.51, 6.52, 6.53, 6.53, 6.54, 6.55, 6.54, 6.55, 6.55, 6.56, 6.58, 6.61, 6.64, 6.69, 6.73, 6.76, 6.81, 6.85, 6.89, 6.95, 7.03, 7.08, 7.17, 7.21, 7.22, 7.32, 7.35, 7.42, 7.45, 7.47, 7.47, 7.47, 7.47, 7.47, 7.47],
+       [0.0, 0.0, 0.0, 5.49, 5.49, 5.57, 5.73, 5.82, 5.90, 5.85, 5.76, 5.66, 5.66, 5.64, 5.73, 5.76, 5.87, 5.88, 5.95, 5.94, 5.98, 6.02, 6.09, 6.15, 6.22, 6.26, 6.30, 6.35, 6.38, 6.38, 6.37, 6.35, 6.31, 6.28, 6.28, 6.29, 6.28, 6.30, 6.30, 6.28, 6.28, 6.28, 6.28, 6.30, 6.32, 6.32, 6.33, 6.34, 6.31, 6.33, 6.33, 6.35, 6.34, 6.38, 6.37, 6.38, 6.39, 6.38, 6.38, 6.40, 6.43, 6.43, 6.46, 6.43, 6.41, 6.39, 6.39, 6.39, 6.41, 6.44, 6.44, 6.45, 6.46, 6.47, 6.47, 6.50, 6.51, 6.53, 6.54, 6.56, 6.56, 6.56, 6.57, 6.59, 6.60, 6.63, 6.68, 6.73, 6.75, 6.80, 6.84, 6.89, 6.95, 7.03, 7.09, 7.17, 7.24, 7.27, 7.31, 7.35, 7.42, 7.43, 7.44, 7.47, 7.47, 7.47, 7.47, 7.47],
+       [0.0, 0.0, 0.0, 5.52, 5.47, 5.55, 5.68, 5.76, 5.82, 5.84, 5.77, 5.70, 5.72, 5.72, 5.77, 5.77, 5.83, 5.84, 5.87, 5.88, 5.93, 5.99, 6.09, 6.20, 6.24, 6.27, 6.30, 6.31, 6.32, 6.32, 6.30, 6.28, 6.24, 6.23, 6.21, 6.21, 6.21, 6.23, 6.22, 6.22, 6.23, 6.22, 6.23, 6.24, 6.24, 6.25, 6.25, 6.23, 6.21, 6.24, 6.25, 6.28, 6.30, 6.34, 6.31, 6.34, 6.33, 6.31, 6.32, 6.35, 6.36, 6.38, 6.42, 6.41, 6.42, 6.42, 6.40, 6.39, 6.41, 6.43, 6.41, 6.42, 6.44, 6.44, 6.45, 6.48, 6.50, 6.52, 6.53, 6.54, 6.53, 6.53, 6.52, 6.55, 6.57, 6.61, 6.66, 6.70, 6.72, 6.76, 6.80, 6.84, 6.90, 6.97, 7.03, 7.11, 7.18, 7.22, 7.27, 7.30, 7.36, 7.38, 7.41, 7.42, 7.42, 7.42, 7.42, 7.42],
+       [0.0, 0.0, 0.0, 5.58, 5.51, 5.55, 5.64, 5.74, 5.75, 5.77, 5.74, 5.72, 5.75, 5.78, 5.79, 5.79, 5.82, 5.82, 5.83, 5.87, 5.93, 5.99, 6.06, 6.15, 6.16, 6.18, 6.23, 6.27, 6.25, 6.27, 6.25, 6.21, 6.19, 6.21, 6.20, 6.20, 6.19, 6.18, 6.16, 6.17, 6.15, 6.16, 6.19, 6.20, 6.18, 6.21, 6.20, 6.20, 6.17, 6.20, 6.20, 6.24, 6.25, 6.31, 6.29, 6.32, 6.31, 6.29, 6.29, 6.30, 6.30, 6.35, 6.38, 6.38, 6.42, 6.42, 6.39, 6.40, 6.40, 6.40, 6.38, 6.37, 6.38, 6.38, 6.40, 6.43, 6.46, 6.49, 6.50, 6.52, 6.51, 6.51, 6.52, 6.56, 6.58, 6.61, 6.66, 6.71, 6.73, 6.77, 6.81, 6.85, 6.91, 6.97, 7.03, 7.09, 7.17, 7.22, 7.27, 7.30, 7.35, 7.36, 7.38, 7.38, 7.38, 7.38, 7.38, 7.38],
+       [0.0, 0.0, 0.0, 5.44, 5.44, 5.46, 5.51, 5.61, 5.61, 5.71, 5.72, 5.74, 5.76, 5.79, 5.78, 5.78, 5.78, 5.80, 5.81, 5.86, 5.88, 5.99, 6.05, 6.15, 6.15, 6.16, 6.18, 6.21, 6.18, 6.19, 6.19, 6.17, 6.14, 6.17, 6.15, 6.14, 6.14, 6.14, 6.12, 6.14, 6.13, 6.13, 6.16, 6.18, 6.15, 6.16, 6.16, 6.17, 6.14, 6.18, 6.18, 6.21, 6.22, 6.28, 6.27, 6.28, 6.28, 6.26, 6.27, 6.26, 6.27, 6.30, 6.32, 6.32, 6.38, 6.38, 6.36, 6.38, 6.38, 6.37, 6.36, 6.37, 6.37, 6.39, 6.40, 6.42, 6.44, 6.46, 6.46, 6.47, 6.48, 6.49, 6.49, 6.53, 6.57, 6.62, 6.66, 6.71, 6.74, 6.77, 6.81, 6.86, 6.92, 6.99, 7.06, 7.12, 7.20, 7.24, 7.29, 7.32, 7.36, 7.37, 7.41, 7.39, 7.39, 7.39, 7.39, 7.39],
+       [0.0, 0.0, 0.0, 5.38, 5.43, 5.49, 5.52, 5.57, 5.59, 5.66, 5.73, 5.76, 5.77, 5.78, 5.79, 5.81, 5.82, 5.84, 5.85, 5.89, 5.95, 6.02, 6.06, 6.11, 6.15, 6.18, 6.18, 6.17, 6.17, 6.18, 6.16, 6.16, 6.15, 6.14, 6.15, 6.14, 6.14, 6.14, 6.14, 6.14, 6.14, 6.16, 6.15, 6.14, 6.14, 6.14, 6.14, 6.16, 6.17, 6.18, 6.19, 6.21, 6.23, 6.23, 6.24, 6.25, 6.26, 6.26, 6.26, 6.27, 6.27, 6.29, 6.31, 6.31, 6.32, 6.33, 6.34, 6.35, 6.34, 6.35, 6.35, 6.36, 6.37, 6.38, 6.39, 6.41, 6.41, 6.42, 6.44, 6.44, 6.46, 6.47, 6.49, 6.52, 6.54, 6.58, 6.62, 6.66, 6.69, 6.73, 6.78, 6.81, 6.87, 6.92, 6.99, 7.04, 7.10, 7.14, 7.19, 7.22, 7.25, 7.27, 7.28, 7.32, 7.32, 7.32, 7.32, 7.32],
+       [0.0, 0.0, 0.0, 5.37, 5.40, 5.44, 5.48, 5.54, 5.57, 5.65, 5.71, 5.75, 5.75, 5.78, 5.78, 5.80, 5.82, 5.85, 5.85, 5.90, 5.94, 6.00, 6.04, 6.08, 6.12, 6.14, 6.14, 6.14, 6.14, 6.15, 6.15, 6.14, 6.13, 6.13, 6.14, 6.14, 6.12, 6.11, 6.11, 6.11, 6.11, 6.12, 6.11, 6.11, 6.11, 6.12, 6.13, 6.15, 6.16, 6.17, 6.18, 6.20, 6.21, 6.21, 6.22, 6.23, 6.23, 6.23, 6.23, 6.25, 6.25, 6.26, 6.30, 6.29, 6.31, 6.32, 6.34, 6.34, 6.34, 6.34, 6.34, 6.35, 6.36, 6.37, 6.37, 6.38, 6.38, 6.39, 6.41, 6.42, 6.44, 6.45, 6.47, 6.50, 6.52, 6.57, 6.61, 6.65, 6.68, 6.72, 6.77, 6.81, 6.86, 6.93, 6.99, 7.04, 7.10, 7.13, 7.18, 7.20, 7.23, 7.25, 7.28, 7.34, 7.34, 7.34, 7.34, 7.34],
+       [0.0, 0.0, 0.0, 5.42, 5.44, 5.48, 5.50, 5.55, 5.57, 5.63, 5.66, 5.70, 5.72, 5.75, 5.78, 5.80, 5.84, 5.88, 5.91, 5.95, 5.98, 6.05, 6.10, 6.13, 6.15, 6.16, 6.15, 6.14, 6.12, 6.13, 6.12, 6.12, 6.11, 6.11, 6.11, 6.10, 6.10, 6.10, 6.10, 6.10, 6.09, 6.10, 6.09, 6.09, 6.10, 6.11, 6.13, 6.15, 6.17, 6.19, 6.20, 6.22, 6.22, 6.21, 6.21, 6.21, 6.22, 6.21, 6.21, 6.23, 6.23, 6.25, 6.28, 6.28, 6.29, 6.30, 6.31, 6.30, 6.30, 6.31, 6.30, 6.31, 6.32, 6.33, 6.34, 6.35, 6.37, 6.38, 6.40, 6.41, 6.43, 6.45, 6.47, 6.50, 6.53, 6.57, 6.61, 6.65, 6.68, 6.73, 6.77, 6.81, 6.86, 6.92, 6.96, 7.01, 7.07, 7.11, 7.15, 7.18, 7.20, 7.23, 7.25, 7.29, 7.29, 7.29, 7.29, 7.29],
+       [0.0, 0.0, 0.0, 5.43, 5.44, 5.48, 5.50, 5.53, 5.53, 5.59, 5.61, 5.65, 5.69, 5.74, 5.78, 5.82, 5.88, 5.94, 6.01, 6.02, 6.08, 6.15, 6.20, 6.22, 6.21, 6.21, 6.20, 6.16, 6.13, 6.13, 6.11, 6.11, 6.12, 6.12, 6.11, 6.10, 6.10, 6.11, 6.11, 6.10, 6.11, 6.09, 6.10, 6.10, 6.10, 6.12, 6.14, 6.16, 6.17, 6.18, 6.19, 6.21, 6.21, 6.20, 6.19, 6.19, 6.19, 6.19, 6.20, 6.21, 6.21, 6.22, 6.25, 6.26, 6.27, 6.27, 6.28, 6.26, 6.27, 6.27, 6.26, 6.26, 6.28, 6.29, 6.30, 6.31, 6.34, 6.36, 6.37, 6.39, 6.42, 6.45, 6.48, 6.51, 6.53, 6.56, 6.60, 6.64, 6.68, 6.72, 6.76, 6.80, 6.85, 6.91, 6.96, 7.01, 7.07, 7.11, 7.14, 7.18, 7.19, 7.22, 7.25, 7.28, 7.28, 7.28, 7.28, 7.28],
+       [0.0, 0.0, 0.0, 5.41, 5.31, 5.38, 5.37, 5.37, 5.43, 5.45, 5.51, 5.58, 5.64, 5.69, 5.76, 5.85, 5.89, 5.98, 6.10, 6.09, 6.19, 6.24, 6.23, 6.21, 6.20, 6.20, 6.16, 6.11, 6.10, 6.07, 6.03, 6.05, 6.10, 6.10, 6.10, 6.13, 6.14, 6.15, 6.13, 6.14, 6.15, 6.14, 6.15, 6.14, 6.13, 6.15, 6.16, 6.18, 6.17, 6.18, 6.18, 6.19, 6.20, 6.18, 6.19, 6.19, 6.19, 6.20, 6.20, 6.21, 6.21, 6.21, 6.25, 6.24, 6.26, 6.27, 6.28, 6.28, 6.28, 6.27, 6.26, 6.25, 6.27, 6.28, 6.29, 6.29, 6.30, 6.32, 6.33, 6.35, 6.39, 6.43, 6.47, 6.49, 6.52, 6.55, 6.58, 6.64, 6.69, 6.73, 6.77, 6.82, 6.88, 6.92, 6.96, 7.03, 7.08, 7.10, 7.12, 7.16, 7.20, 7.21, 7.25, 7.28, 7.28, 7.28, 7.28, 7.28],
+       [0.0, 0.0, 0.0, 4.89, 5.10, 5.29, 5.29, 5.27, 5.27, 5.44, 5.64, 5.67, 5.67, 5.79, 5.79, 5.89, 6.17, 6.05, 6.14, 6.16, 6.13, 6.16, 6.11, 6.08, 6.09, 6.07, 6.04, 6.00, 6.03, 6.01, 6.03, 6.05, 6.05, 6.08, 6.12, 6.15, 6.17, 6.21, 6.23, 6.21, 6.22, 6.19, 6.17, 6.17, 6.16, 6.16, 6.12, 6.10, 6.09, 6.10, 6.12, 6.11, 6.10, 6.11, 6.11, 6.11, 6.09, 6.10, 6.19, 6.20, 6.21, 6.20, 6.23, 6.20, 6.21, 6.19, 6.23, 6.22, 6.22, 6.20, 6.20, 6.23, 6.24, 6.27, 6.28, 6.33, 6.35, 6.39, 6.42, 6.47, 6.53, 6.54, 6.58, 6.58, 6.60, 6.62, 6.64, 6.69, 6.70, 6.75, 6.74, 6.76, 6.83, 6.88, 6.96, 6.96, 7.00, 7.03, 7.07, 7.13, 7.18, 7.18, 7.21, 7.24, 7.24, 7.24, 7.24, 7.24]]
 
 
 def FDSN_station_query(station, service):
@@ -33,8 +53,7 @@ def FDSN_station_query(station, service):
     """
 
     # Query station information
-    query = 'https://service.geonet.org.nz/fdsnws/station/1/query?station=' + \
-            station # hardcoded service; needs reworking throughout
+    query = service + '/fdsnws/station/1/query?station=' + station
     queryresult = curl(query)
 
     # Parse station information
@@ -44,6 +63,33 @@ def FDSN_station_query(station, service):
     depth = -1 * float(root[4][3][4].text)
 
     return latitude, longitude, depth
+
+
+def query_gain(service, station, location, channel, starttime, endtime):
+
+    """
+    Query FDSN for site metadata.
+    :param: station: site code to get data from (string)
+    :param: location: location code to get data from (string)
+    :param: channel: channel code to get data from (string)
+    :param: starttime: UTC start time of desired data (ISO8601 string)
+    :param: endtime: UTC end time of desired data (ISO8601 string)
+    :param: client: FDSN webservice to use as the client:
+            https://service.geonet.org.nz (archive) or https://service-nrt.geonet.org.nz (last week)
+    :return: gain value for site
+    """
+
+    query_string = service + '/fdsnws/station/1/query?station=' + station + \
+                   '&location=' + str(location) + \
+                   '&channel=' + str(channel) + \
+                   '&starttime=' + starttime.isoformat() + \
+                   '&endtime=' + endtime.isoformat() + \
+                   '&level=channel'
+    curl_result = curl(query_string).decode('ascii')
+    sti = curl_result.find('<InstrumentSensitivity><Value>')
+    ste = curl_result.find('</Value>', sti)
+    gain = curl_result[sti + len('<InstrumentSensitivity><Value>'):ste]
+    return gain
 
 
 def query_fdsn(service, station, location, channel, starttime, endtime):
@@ -58,13 +104,14 @@ def query_fdsn(service, station, location, channel, starttime, endtime):
     :return: obspy stream object containing requested data
     """
 
-    client = Client('GEONET')  # hardcoded service; needs reworking throughout
+    client = Client(service)
     stream = client.get_waveforms(station=station,
-                                  network='NZ',  # also hardcoded
+                                  network='NZ',  # hardcoded
                                   channel=channel,
                                   location=location,
                                   starttime=starttime,
-                                  endtime=endtime)
+                                  endtime=endtime,
+                                  attach_response=True)
     return stream
 
 
@@ -151,7 +198,7 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                     # Build query
                     query = ""
                     query = query.join((service,
-                                        "query?",
+                                        "/fdsnws/event/1/query?",
                                         "minmagnitude=",
                                         str(minmagnitude),
                                         "&maxmagnitude=",
@@ -267,6 +314,9 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                 # If desired, calculate missing magnitudes for mB, MLv, Mw(mB) magnitude types
                 calculate_magnitudes = True
                 if calculate_magnitudes:
+                    calculated_magnitudes = [[] for m in range(len(comparison_magnitudes))]
+                    catalogue_magnitudes = [[] for m in range(len(comparison_magnitudes))]
+                    magnitude_differences = [[] for m in range(len(comparison_magnitudes))]
                     for event in events:
                         # Create theoretical S wave arrivals
                         hypocentre = [event.origins[0].latitude,
@@ -274,6 +324,15 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                                       event.origins[0].depth]
                         origin_time = event.origins[0].time
                         picks = event.picks
+                        calculated_station_magnitudes = [[] for m in range(len(comparison_magnitudes))]
+                        # catalogue_station_magnitudes = [[] for m in range(len(comparison_magnitudes))]
+                        # catalogue_sm_resource_ids = [[] for m in range(len(comparison_magnitudes))]
+                        # used_station_magnitudes = [[] for m in range(len(comparison_magnitudes))]
+                        # station_magnitude_weights = [[] for m in range(len(comparison_magnitudes))]
+                        # stations = [[] for m in range(len(comparison_magnitudes))]
+                        # used_stations = [[] for m in range(len(comparison_magnitudes))]
+                        # catalogue_stations = [[] for m in range(len(comparison_magnitudes))]
+
                         for pick in picks:
                             if pick.phase_hint == 'P':
                                 p_tt = pick.time
@@ -282,7 +341,17 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                             station = pick.waveform_id.station_code
                             location = pick.waveform_id.location_code
                             channel = pick.waveform_id.channel_code
-                            station_location = FDSN_station_query(station, service)
+                            if channel[-1] != 'Z':
+                                # Only allow vertical channel
+                                continue
+                            # if channel != 'HHZ':
+                                #  Only allow BB vertical
+                                # continue
+                            try:
+                                station_location = FDSN_station_query(station, service)
+                            except:
+                                # Fails if metadata doesn't exist for station
+                                continue
                             # Calculate epicentral distance in degrees
                             delta = math.degrees(2 * (math.asin(((math.sin(1 / 2 * math.radians(abs(hypocentre[0] -
                                                                                                     station_location[
@@ -293,30 +362,120 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                                                                                                     station_location[
                                                                                                         1])))) ** 2) **
                                                                 (1 / 2))))
-                            if delta > 5:  # Hardcode conditions for mB
-                                # Calculate theoretical travel times
-                                arrivals = spherical_velocity_model.get_travel_times(
-                                    source_depth_in_km=hypocentre[2] / 1000.0,
-                                    receiver_depth_in_km=max(
-                                        0.0, (station_location[2] / 1000.0)),
-                                    distance_in_degree=delta,
-                                    phase_list=['s', 'S'])
-                                # Extract travel times
-                                s_tt = None
-                                for arrival in arrivals:
-                                    if arrival.name == 's' or arrival.name == 'S' and s_tt is None:
-                                        s_tt = origin_time + arrival.time
-                            else:
+                            focal_depth = hypocentre[2] / 2000
+                            # Calculate theoretical travel times
+                            arrivals = spherical_velocity_model.get_travel_times(
+                                source_depth_in_km=focal_depth,
+                                receiver_depth_in_km=max(
+                                    0.0, (station_location[2] / 1000.0)),
+                                distance_in_degree=delta,
+                                phase_list=['s', 'S'])
+
+                            # Extract travel times
+                            s_tt = None
+                            for arrival in arrivals:
+                                if arrival.name == 's' or arrival.name == 'S' and s_tt is None:
+                                    s_tt = origin_time + arrival.time
+
+                            for i, magnitude_type in enumerate(comparison_magnitudes):
+                                if magnitude_type == 'mB' and 5 <= delta <= 105 and 0 < focal_depth < 700:
+                                    focal_depth += 1  # As in SC3
+                                    # Set window
+                                    st = p_tt
+                                    et = st + max(11.5 * delta, 60)
+                                    # et = st + 60  # Windows longer than 60 seconds might catch unwanted phases
+                                    # Calculate noise
+                                    try:
+                                        waveform = query_fdsn(service, station, location, channel, st - 35, et)
+                                        waveform.detrend('linear')
+                                        waveform.remove_response()
+                                    except:
+                                        # If there is no data, or no response, skip the station
+                                        continue
+                                    noise_waveform = waveform.copy().trim(st - 35, st - 5)
+                                    signal_waveform = waveform.copy().trim(st - 5, et)
+                                    try:
+                                        offset = np.median(noise_waveform[0].data)
+                                        noise_waveform -= offset
+                                        rms = 0
+                                        for j in range(len(noise_waveform[0].data)):
+                                            rms += (noise_waveform[0].data[j]) ** 2
+                                        rms /= len(noise_waveform[0].data)
+                                        noise = 2 * math.sqrt(rms)
+                                    except:
+                                        # Will fail if data doesn't exist for the given site/loc/cha
+                                        continue
+                                    # Get max amplitude
+                                    amplitude = max(abs(signal_waveform[0].data)) - offset
+                                    # Check SNR
+                                    if amplitude / noise < 3:
+                                        continue
+                                    # Convert amplitude to nm/s
+                                    amplitude *= 1E9
+                                    # From SC3: mb calculation (modify amplitude to um, subtract 0.14 from result)
+                                    if focal_depth < 100:
+                                        k = int(round(focal_depth / 25 + 2))
+                                        s1 = 0.04 * ((focal_depth - 25) * (k - 2))
+                                    else:
+                                        k = int(round(min(focal_depth / 50 + 4, 17)))
+                                        s1 = 0.02 * ((focal_depth - 50) * (k - 4))
+                                    j = int(round(max(min(delta, 108), 2)))
+                                    s2 = delta - j
+                                    q1 = qmb[k - 2][j - 2] + s1 * (qmb[k - 1][j - 2] - qmb[k - 2][j - 2])
+                                    Q = q1 + s2 * \
+                                        ((qmb[k - 2][j - 1] + s1 * (qmb[k - 1][j - 1] - qmb[k - 2][j - 1])) - q1)
+                                    mB = math.log(amplitude * 1E-3 / (2 * math.pi), 10) + Q - 0.14
+                                    calculated_station_magnitudes[i].append(mB)
+                                    # stations[i].append(station)
+                        # Do magnitude calculations
+                        for i, magnitude_type in enumerate(comparison_magnitudes):
+                            # Get magnitude value for event, if it exists
+                            catalogue_value = np.nan
+                            for event_magnitude in event.magnitudes:
+                                if event_magnitude.magnitude_type == magnitude_type:
+                                    # Get station magnitudes
+                                    # for station_magnitude in event.station_magnitudes:
+                                    #     if station_magnitude.station_magnitude_type == magnitude_type:
+                                    #         catalogue_station_magnitudes[i].append(station_magnitude.mag)
+                                    #         catalogue_sm_resource_ids[i].append(station_magnitude.resource_id)
+                                    #         catalogue_stations[i].append(station_magnitude.waveform_id['station_code'])
+                                    # Find which station magnitudes were used
+                                    # for station_magnitude in event_magnitude.station_magnitude_contributions:
+                                        # for j, resource_id in enumerate(catalogue_sm_resource_ids[i]):
+                                            # if station_magnitude['station_magnitude_id'] == resource_id:
+                                                # used_station_magnitudes[i].append(catalogue_station_magnitudes[i][j])
+                                                # station_magnitude_weights[i].append(station_magnitude['weight'])
+                                                # used_stations[i].append(catalogue_stations[i][j])
+                                    catalogue_value = event_magnitude.mag
+                            calculated_value = trim_mean(calculated_station_magnitudes[i], 0.25)
+                            # calculated_catalogue_value = trim_mean(catalogue_station_magnitudes[i], 0.125)
+                            # numerator = sum([used_station_magnitudes[i][j] * station_magnitude_weights[i][j]
+                            #                  for j in range(len(used_station_magnitudes[i]))])
+                            # denominator = sum(station_magnitude_weights[i])
+                            # calculated_used_value = numerator / denominator
+                            # for j in range(len(used_station_magnitudes[i])):
+                            #     try:
+                            #         print(used_stations[i][j], used_station_magnitudes[i][j],
+                            #               station_magnitude_weights[i][j],
+                            #               calculated_station_magnitudes[i][stations[i].index(used_stations[i][j])])
+                            #     except ValueError:
+                            #         print(used_stations[i][j] + ' not used in current calculation.')
+                            # print(magnitude_type, calculated_value, calculated_catalogue_value, calculated_used_value,
+                            #       catalogue_value)
+                            catalogue_magnitudes[i].append(catalogue_value)
+                            calculated_magnitudes[i].append(calculated_value)
+                            if np.isnan(catalogue_value) or np.isnan(calculated_value):
                                 continue
+                            else:
+                                magnitude_differences[i].append(calculated_value - catalogue_value)
 
-                            # Set times for data querying
-                            st = p_tt
-                            et = s_tt - datetime.timedelta(seconds=(s_tt - p_tt) / 10)
-
-                            # Get data for magnitude calculation
-                            waveform = query_fdsn(service, station, location, channel, st, et)
-                            print(waveform)
-                            exit()
+                    # Check output
+                    for i in range(len(calculated_magnitudes)):
+                        print(magnitude_differences[i])
+                        plt.hist(magnitude_differences[i], bins=10)
+                        plt.show()
+                        plt.scatter(catalogue_magnitudes[i], calculated_magnitudes[i])
+                        plt.show()
 
                 # Append new magnitude data to files
                 save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
@@ -981,9 +1140,9 @@ if endtime == 'now':
 catalog_names = ['GeoNet_catalog', 'USGS_catalog']
 # catalog_names = ['ISC_catalog']
 # catalog_names = ['USGS_catalog']
-services = ["https://service.geonet.org.nz/fdsnws/event/1/", "https://earthquake.usgs.gov/fdsnws/event/1/"]
+services = ["https://service.geonet.org.nz", "https://earthquake.usgs.gov"]
 # services = ['isc']
-# services = ['https://earthquake.usgs.gov/fdsnws/event/1/']
+# services = ['https://earthquake.usgs.gov']
 
 catalogs = [[] for i in range(len(catalog_names))]
 
@@ -995,7 +1154,8 @@ catalogs = [[] for i in range(len(catalog_names))]
 # you will need to repeat its details as both the comparison and reference catalogs.
 
 # comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
-comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)'], ['mww']]
+# comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)'], ['mww']]
+comparison_magnitudes = [['mB'], ['mww']]
 # comparison_magnitudes = [['mww']]
 
 # Set which magnitude type pairs to do orthogonal regression for
