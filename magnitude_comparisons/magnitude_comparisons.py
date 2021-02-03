@@ -2,8 +2,10 @@
 Compare earthquake magnitudes within or between their representations in earthquake catalogs.
 """
 
+import copy
 import datetime
 import earthquake_location
+import eqcorrscan
 import glob
 from io import BytesIO
 import math
@@ -12,6 +14,7 @@ import numpy as np
 from obspy.clients.fdsn import Client
 from obspy.taup import TauPyModel
 from obspy.io.quakeml.core import Unpickler
+from obspy.signal.invsim import estimate_magnitude
 import os
 import pycurl
 from scipy.odr import Model, Data, ODR
@@ -113,19 +116,6 @@ def query_fdsn(service, station, location, channel, starttime, endtime):
                                   endtime=endtime,
                                   attach_response=True)
     return stream
-
-
-def calculate_magnitude(stream, magnitude_type):
-
-    if magnitude_type == 'mB' or magnitude_type == 'Mw(mB)':
-        stream.filter('bandpass', freqmin=1, freqmax=2)
-        magnitude = max(stream.data)
-    elif magnitude_type == 'MLv':
-        stream.filter('bandpass', freqmin=1, freqmax=2)
-        magnitude = max(stream.data)
-    if magnitude_type == 'Mw(mB)':
-        magnitude = magnitude
-    return magnitude
 
 
 def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, maxlatitude, catalog_name,
@@ -314,6 +304,7 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                 # If desired, calculate missing magnitudes for mB, MLv, Mw(mB) magnitude types
                 calculate_magnitudes = True
                 if calculate_magnitudes:
+                    comparison_magnitudes.sort(reverse=True)  # Ensure mB comes before Mw(mB) in loops
                     calculated_magnitudes = [[] for m in range(len(comparison_magnitudes))]
                     catalogue_magnitudes = [[] for m in range(len(comparison_magnitudes))]
                     magnitude_differences = [[] for m in range(len(comparison_magnitudes))]
@@ -325,14 +316,6 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                         origin_time = event.origins[0].time
                         picks = event.picks
                         calculated_station_magnitudes = [[] for m in range(len(comparison_magnitudes))]
-                        # catalogue_station_magnitudes = [[] for m in range(len(comparison_magnitudes))]
-                        # catalogue_sm_resource_ids = [[] for m in range(len(comparison_magnitudes))]
-                        # used_station_magnitudes = [[] for m in range(len(comparison_magnitudes))]
-                        # station_magnitude_weights = [[] for m in range(len(comparison_magnitudes))]
-                        # stations = [[] for m in range(len(comparison_magnitudes))]
-                        # used_stations = [[] for m in range(len(comparison_magnitudes))]
-                        # catalogue_stations = [[] for m in range(len(comparison_magnitudes))]
-
                         for pick in picks:
                             if pick.phase_hint == 'P':
                                 p_tt = pick.time
@@ -341,12 +324,9 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                             station = pick.waveform_id.station_code
                             location = pick.waveform_id.location_code
                             channel = pick.waveform_id.channel_code
-                            if channel[-1] != 'Z':
-                                # Only allow vertical channel
-                                continue
-                            # if channel != 'HHZ':
+                            if channel != 'HHZ':
                                 #  Only allow BB vertical
-                                # continue
+                                continue
                             try:
                                 station_location = FDSN_station_query(station, service)
                             except:
@@ -377,13 +357,68 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                                 if arrival.name == 's' or arrival.name == 'S' and s_tt is None:
                                     s_tt = origin_time + arrival.time
 
+                            # Gather station magnitudes for magnitude calculation
                             for i, magnitude_type in enumerate(comparison_magnitudes):
+                                if magnitude_type == 'MLv' and delta <= 8:
+                                    # Set window
+                                    st = p_tt
+                                    et = st + 60
+                                    try:
+                                        waveform = query_fdsn(service, station, location, channel, st - 35, et)
+                                        waveform.detrend('linear')
+                                    except:
+                                        # If there is no data, or no response, skip the station
+                                        continue
+                                    noise_waveform = waveform.copy().trim(st - 35, st - 5)
+                                    signal_waveform = waveform.copy().trim(st - 5, et)
+                                    try:
+                                        offset = np.median(noise_waveform[0].data)
+                                        noise_waveform -= offset
+                                        rms = 0
+                                        for j in range(len(noise_waveform[0].data)):
+                                            rms += (noise_waveform[0].data[j]) ** 2
+                                        rms /= len(noise_waveform[0].data)
+                                        noise = 2 * math.sqrt(rms)
+                                        amplitude = max(abs(signal_waveform[0].data))
+                                        if amplitude / noise < 3:
+                                            continue
+                                    except:
+                                        # Will fail if data doesn't exist for the given site/loc/cha
+                                        continue
+                                    # Use EQCorrscan to do Wood-Anderson simulation and amplitude picking
+                                    client = Client(service)
+                                    inventory = client.get_stations(network='NZ', station=station,
+                                                                    starttime=st, endtime=et, level='response')
+                                    tr = eqcorrscan.utils.mag_calc._sim_WA(signal_waveform[0],
+                                                                           inventory,
+                                                                           water_level=0, velocity=False)
+                                    if not tr:
+                                        continue
+                                    amplitude, period, delay, peak, trough =\
+                                        eqcorrscan.utils.mag_calc._max_p2t(tr.data, tr.stats.delta,
+                                                                           return_peak_trough=True)
+                                    # Convert delta to km distance
+                                    distance = delta * 111.32
+                                    # Convert amplitude to mm
+                                    amplitude *= 1E3
+                                    amplitude *= 2  # Scale by 2 to account for vertical component picking (as in SC3)
+                                    ML_distances = [0, 60, 400, 1000]
+                                    ML_A0 = [-1.3, -2.8, -4.5, -5.85]
+                                    for n in range(1, len(ML_distances)):
+                                        if ML_distances[n - 1] <= distance < ML_distances[n]:
+                                            A0 = ((distance - ML_distances[n - 1]) /
+                                                  (ML_distances[n] - ML_distances[n - 1])) * \
+                                                 (ML_A0[n] - ML_A0[n - 1]) + ML_A0[n - 1]
+                                    MLv = math.log(amplitude, 10) - A0
+                                    print(MLv)
+                                    calculated_station_magnitudes[i].append(MLv)
+
                                 if magnitude_type == 'mB' and 5 <= delta <= 105 and 0 < focal_depth < 700:
                                     focal_depth += 1  # As in SC3
                                     # Set window
                                     st = p_tt
-                                    et = st + max(11.5 * delta, 60)
-                                    # et = st + 60  # Windows longer than 60 seconds might catch unwanted phases
+                                    et = st + 60
+                                    # et = st + max(11.5 * delta, 60)
                                     # Calculate noise
                                     try:
                                         waveform = query_fdsn(service, station, location, channel, st - 35, et)
@@ -426,42 +461,49 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                                         ((qmb[k - 2][j - 1] + s1 * (qmb[k - 1][j - 1] - qmb[k - 2][j - 1])) - q1)
                                     mB = math.log(amplitude * 1E-3 / (2 * math.pi), 10) + Q - 0.14
                                     calculated_station_magnitudes[i].append(mB)
-                                    # stations[i].append(station)
+
                         # Do magnitude calculations
                         for i, magnitude_type in enumerate(comparison_magnitudes):
+                            # Skip any cases where there is no calculated value
+                            if len(calculated_station_magnitudes[i]) == 0:
+                                continue
+                            calculated_value = trim_mean(calculated_station_magnitudes[i], 0.25)
+                            if magnitude_type == 'mB':
+                                # Build Mw(mB) data
+                                try:
+                                    idx = comparison_magnitudes.index('Mw(mB)')
+                                except ValueError:
+                                    continue
+                                for station_magnitude in calculated_station_magnitudes[i]:
+                                    # Calculate Mw(mB) as per SC3
+                                    calculated_station_magnitudes[idx].append(1.3 * station_magnitude - 2.18)
                             # Get magnitude value for event, if it exists
                             catalogue_value = np.nan
                             for event_magnitude in event.magnitudes:
                                 if event_magnitude.magnitude_type == magnitude_type:
-                                    # Get station magnitudes
-                                    # for station_magnitude in event.station_magnitudes:
-                                    #     if station_magnitude.station_magnitude_type == magnitude_type:
-                                    #         catalogue_station_magnitudes[i].append(station_magnitude.mag)
-                                    #         catalogue_sm_resource_ids[i].append(station_magnitude.resource_id)
-                                    #         catalogue_stations[i].append(station_magnitude.waveform_id['station_code'])
-                                    # Find which station magnitudes were used
-                                    # for station_magnitude in event_magnitude.station_magnitude_contributions:
-                                        # for j, resource_id in enumerate(catalogue_sm_resource_ids[i]):
-                                            # if station_magnitude['station_magnitude_id'] == resource_id:
-                                                # used_station_magnitudes[i].append(catalogue_station_magnitudes[i][j])
-                                                # station_magnitude_weights[i].append(station_magnitude['weight'])
-                                                # used_stations[i].append(catalogue_stations[i][j])
                                     catalogue_value = event_magnitude.mag
-                            calculated_value = trim_mean(calculated_station_magnitudes[i], 0.25)
-                            # calculated_catalogue_value = trim_mean(catalogue_station_magnitudes[i], 0.125)
-                            # numerator = sum([used_station_magnitudes[i][j] * station_magnitude_weights[i][j]
-                            #                  for j in range(len(used_station_magnitudes[i]))])
-                            # denominator = sum(station_magnitude_weights[i])
-                            # calculated_used_value = numerator / denominator
-                            # for j in range(len(used_station_magnitudes[i])):
-                            #     try:
-                            #         print(used_stations[i][j], used_station_magnitudes[i][j],
-                            #               station_magnitude_weights[i][j],
-                            #               calculated_station_magnitudes[i][stations[i].index(used_stations[i][j])])
-                            #     except ValueError:
-                            #         print(used_stations[i][j] + ' not used in current calculation.')
-                            # print(magnitude_type, calculated_value, calculated_catalogue_value, calculated_used_value,
-                            #       catalogue_value)
+                                    # If a catalogue value exists,
+                                    # update the catalogue value to the calculated value
+                                    event_magnitude.resource_id = 'nan'
+                                    event_magnitude.mag = calculated_value
+                                    event_magnitude.method_id = 'scipy trim_mean 0.25'
+                                    event_magnitude.station_count = len(calculated_station_magnitudes[i])
+                                    event_magnitude.creation_info = 'nan'
+                                    event_magnitude.station_magnitude_contributions = \
+                                        len(calculated_station_magnitudes[i])
+                            if np.isnan(catalogue_value):
+                                # If no catalogue value exists,
+                                # create one
+                                newmag = copy.deepcopy(event.magnitudes[0])
+                                newmag.resource_id = 'nan'
+                                newmag.mag = calculated_value
+                                newmag.magnitude_type = comparison_magnitudes[i]
+                                newmag.method_id = 'scipy trim_mean 0.25'
+                                newmag.station_count = len(calculated_station_magnitudes[i])
+                                newmag.creation_info = 'nan'
+                                newmag.station_magnitude_contributions = \
+                                    len(calculated_station_magnitudes[i])
+                                event.magnitudes.append(newmag)
                             catalogue_magnitudes[i].append(catalogue_value)
                             calculated_magnitudes[i].append(calculated_value)
                             if np.isnan(catalogue_value) or np.isnan(calculated_value):
@@ -471,7 +513,6 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
 
                     # Check output
                     for i in range(len(calculated_magnitudes)):
-                        print(magnitude_differences[i])
                         plt.hist(magnitude_differences[i], bins=10)
                         plt.show()
                         plt.scatter(catalogue_magnitudes[i], calculated_magnitudes[i])
@@ -883,8 +924,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                                 earthquake_location.parse_files(eventid_file='temporary_event_file',
                                                                 test_origins='temporary_test_origins',
                                                                 mode='spherical',
-                                                                event_service=services[0],
-                                                                station_service=services[0].replace('event', 'station'))
+                                                                event_service=services[0] + '/fdsnws/event/1/',
+                                                                station_service=services[0] + '/fdsnws/station/1/')
 
                             # Check arrival time data is non-empty, and if it is, ensure arrival is ignored
                             if len(arrival_time_data) == 1 and len(arrival_time_data[0]) == 0:
@@ -1155,7 +1196,7 @@ catalogs = [[] for i in range(len(catalog_names))]
 
 # comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
 # comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)'], ['mww']]
-comparison_magnitudes = [['mB'], ['mww']]
+comparison_magnitudes = [['MLv'], ['mww']]
 # comparison_magnitudes = [['mww']]
 
 # Set which magnitude type pairs to do orthogonal regression for
@@ -1174,10 +1215,10 @@ rms_threshold = 5  # origin time potential matches must be within (in seconds) w
 
 # Set what level of processing you want the script to do
 build_magnitude_timeseries = True  # Should the script build the magnitude timeseries, or they exist already?
-build_GeoNet_Mw_timeseries = False  # Should the script build a magnitude timeseries for the GeoNet Mw catalog?
+build_GeoNet_Mw_timeseries = True  # Should the script build a magnitude timeseries for the GeoNet Mw catalog?
 gb_plotting = False  # Should the script produce Gutenburg-Richter style plots?
-matching = False # Should the script match events within and between catalogs?
-mw_merging = False  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
+matching = True  # Should the script match events within and between catalogs?
+mw_merging = True  # Should the script merge all Mw magnitudes regardless of origin (assuming they are all equal)?
 show_matching = False  # Should the script show the operator those events in the match window if matching is performed?
 
 # Build event catalogs from FDSN
