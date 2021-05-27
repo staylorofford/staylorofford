@@ -5,7 +5,7 @@ Compare earthquake magnitudes within or between their representations in earthqu
 import copy
 import datetime
 import earthquake_location
-import eqcorrscan
+# import eqcorrscan
 import glob
 from io import BytesIO
 import math
@@ -125,17 +125,6 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
     """
     Use obspy with pycurl to query event details from the ISC.
     Uses a file to save query results to to avoid crashing the computer due to memory filling.
-    :param minmagnitude:
-    :param minlongitude:
-    :param maxlongitude:
-    :param minlatitude:
-    :param maxlatitude:
-    :param starttime:
-    :param endtime:
-    :param maxmagnitude:
-    :param catalog_name:
-    :param comparison_magnitudes:
-    :return:
     """
 
     # Adjust parameter format if required
@@ -210,7 +199,7 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
 
                     print('\nAttempting catalog query for events between ' + str(time_ranges[i - 1]) +
                           ' and ' + str(time_ranges[i]))
-
+                    # print(successes, query_pass)
                     queryresult = curl(query)
                     if "Sorry, but your request cannot be processed at the present time." in queryresult.decode('utf-8'):
                         # Wait a minute, then try again with the same query
@@ -231,6 +220,7 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                     print('Query produced ' + str(len(events)) + ' events')
                     successes += 1
                     query_pass = True
+                    # print(successes, query_pass)
 
                 except:
                     print('Failed! Query result is:')
@@ -245,6 +235,7 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                         print('Assuming query failed because no events exist in the time window')
                         successes += 1
                         query_pass = True
+                        # print(successes, query_pass)
                     else:
                         factor += 100  # Only fails for huge datasets, so try minimise the size of the first new query
                         break
@@ -253,7 +244,7 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                 # Save queryresult to file
                 with open('catalog_data.txt', 'a') as outfile:
                     outfile.write(queryresult.decode('utf-8'))
-
+        # print(success, successes, len(time_ranges) - 1)
         if successes == len(time_ranges) - 1:
             success = True
 
@@ -281,15 +272,16 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                 else:
                     entry += row
                     catalog = quakeml_reader.loads(entry.encode('utf-8'))
-                    # Remove unnecessary elements in the catalog to reduce RAM use of the code
-                    for m in range(len(catalog)):
-                        catalog[m].amplitudes = None
-                        catalog[m].station_magnitudes = None
                     events = catalog.events
                     print('Current catalog has ' + str(len(events)) + ' events')
 
-                    # Append new magnitude data to files
-                    save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
+                    # If desired, calculate magnitudes for mB, MLv, Mw(mB) magnitude types regardless of their existence
+                    calculate_magnitudes = False
+                    if calculate_magnitudes:
+                        magnitude_calculation(catalog, catalog_name, comparison_magnitudes, service)
+                    else:
+                        # Otherwise, append new magnitude data to files
+                        save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
                     entry = ''
             else:
                 # Otherwise continue to extend the current entry
@@ -301,227 +293,275 @@ def event_query(service, minmagnitude, minlongitude, maxlongitude, minlatitude, 
                 events = catalog.events
                 print('Current catalog has ' + str(len(events)) + ' events')
 
-                # If desired, calculate missing magnitudes for mB, MLv, Mw(mB) magnitude types
-                calculate_magnitudes = True
+                # If desired, calculate magnitudes for mB, MLv, Mw(mB) magnitude types regardless of their existence
+                calculate_magnitudes = False
                 if calculate_magnitudes:
-                    comparison_magnitudes.sort(reverse=True)  # Ensure mB comes before Mw(mB) in loops
-                    calculated_magnitudes = [[] for m in range(len(comparison_magnitudes))]
-                    catalogue_magnitudes = [[] for m in range(len(comparison_magnitudes))]
-                    magnitude_differences = [[] for m in range(len(comparison_magnitudes))]
-                    for event in events:
-                        # Create theoretical S wave arrivals
-                        hypocentre = [event.origins[0].latitude,
-                                      event.origins[0].longitude,
-                                      event.origins[0].depth]
-                        origin_time = event.origins[0].time
-                        picks = event.picks
-                        calculated_station_magnitudes = [[] for m in range(len(comparison_magnitudes))]
-                        for pick in picks:
-                            if pick.phase_hint == 'P':
-                                p_tt = pick.time
-                            else:
-                                continue
-                            station = pick.waveform_id.station_code
-                            location = pick.waveform_id.location_code
-                            channel = pick.waveform_id.channel_code
-                            if channel != 'HHZ':
-                                #  Only allow BB vertical
-                                continue
-                            try:
-                                station_location = FDSN_station_query(station, service)
-                            except:
-                                # Fails if metadata doesn't exist for station
-                                continue
-                            # Calculate epicentral distance in degrees
-                            delta = math.degrees(2 * (math.asin(((math.sin(1 / 2 * math.radians(abs(hypocentre[0] -
-                                                                                                    station_location[
-                                                                                                        0])))) ** 2 +
-                                                                 math.cos(math.radians(hypocentre[0])) *
-                                                                 math.cos(math.radians(station_location[0])) *
-                                                                 (math.sin(1 / 2 * math.radians(abs(hypocentre[1] -
-                                                                                                    station_location[
-                                                                                                        1])))) ** 2) **
-                                                                (1 / 2))))
-                            focal_depth = hypocentre[2] / 2000
-                            # Calculate theoretical travel times
-                            arrivals = spherical_velocity_model.get_travel_times(
-                                source_depth_in_km=focal_depth,
-                                receiver_depth_in_km=max(
-                                    0.0, (station_location[2] / 1000.0)),
-                                distance_in_degree=delta,
-                                phase_list=['s', 'S'])
-
-                            # Extract travel times
-                            s_tt = None
-                            for arrival in arrivals:
-                                if arrival.name == 's' or arrival.name == 'S' and s_tt is None:
-                                    s_tt = origin_time + arrival.time
-
-                            # Gather station magnitudes for magnitude calculation
-                            for i, magnitude_type in enumerate(comparison_magnitudes):
-                                if magnitude_type == 'MLv' and delta <= 8:
-                                    # Set window
-                                    st = p_tt
-                                    et = st + 60
-                                    try:
-                                        waveform = query_fdsn(service, station, location, channel, st - 35, et)
-                                        waveform.detrend('linear')
-                                    except:
-                                        # If there is no data, or no response, skip the station
-                                        continue
-                                    noise_waveform = waveform.copy().trim(st - 35, st - 5)
-                                    signal_waveform = waveform.copy().trim(st - 5, et)
-                                    try:
-                                        offset = np.median(noise_waveform[0].data)
-                                        noise_waveform -= offset
-                                        rms = 0
-                                        for j in range(len(noise_waveform[0].data)):
-                                            rms += (noise_waveform[0].data[j]) ** 2
-                                        rms /= len(noise_waveform[0].data)
-                                        noise = 2 * math.sqrt(rms)
-                                        amplitude = max(abs(signal_waveform[0].data))
-                                        if amplitude / noise < 3:
-                                            continue
-                                    except:
-                                        # Will fail if data doesn't exist for the given site/loc/cha
-                                        continue
-                                    # Use EQCorrscan to do Wood-Anderson simulation and amplitude picking
-                                    client = Client(service)
-                                    inventory = client.get_stations(network='NZ', station=station,
-                                                                    starttime=st, endtime=et, level='response')
-                                    tr = eqcorrscan.utils.mag_calc._sim_WA(signal_waveform[0],
-                                                                           inventory,
-                                                                           water_level=0, velocity=False)
-                                    if not tr:
-                                        continue
-                                    amplitude, period, delay, peak, trough =\
-                                        eqcorrscan.utils.mag_calc._max_p2t(tr.data, tr.stats.delta,
-                                                                           return_peak_trough=True)
-                                    # Convert delta to km distance
-                                    distance = delta * 111.32
-                                    # Convert amplitude to mm
-                                    amplitude *= 1E3
-                                    amplitude *= 2  # Scale by 2 to account for vertical component picking (as in SC3)
-                                    ML_distances = [0, 60, 400, 1000]
-                                    ML_A0 = [-1.3, -2.8, -4.5, -5.85]
-                                    for n in range(1, len(ML_distances)):
-                                        if ML_distances[n - 1] <= distance < ML_distances[n]:
-                                            A0 = ((distance - ML_distances[n - 1]) /
-                                                  (ML_distances[n] - ML_distances[n - 1])) * \
-                                                 (ML_A0[n] - ML_A0[n - 1]) + ML_A0[n - 1]
-                                    MLv = math.log(amplitude, 10) - A0
-                                    print(MLv)
-                                    calculated_station_magnitudes[i].append(MLv)
-
-                                if magnitude_type == 'mB' and 5 <= delta <= 105 and 0 < focal_depth < 700:
-                                    focal_depth += 1  # As in SC3
-                                    # Set window
-                                    st = p_tt
-                                    et = st + 60
-                                    # et = st + max(11.5 * delta, 60)
-                                    # Calculate noise
-                                    try:
-                                        waveform = query_fdsn(service, station, location, channel, st - 35, et)
-                                        waveform.detrend('linear')
-                                        waveform.remove_response()
-                                    except:
-                                        # If there is no data, or no response, skip the station
-                                        continue
-                                    noise_waveform = waveform.copy().trim(st - 35, st - 5)
-                                    signal_waveform = waveform.copy().trim(st - 5, et)
-                                    try:
-                                        offset = np.median(noise_waveform[0].data)
-                                        noise_waveform -= offset
-                                        rms = 0
-                                        for j in range(len(noise_waveform[0].data)):
-                                            rms += (noise_waveform[0].data[j]) ** 2
-                                        rms /= len(noise_waveform[0].data)
-                                        noise = 2 * math.sqrt(rms)
-                                    except:
-                                        # Will fail if data doesn't exist for the given site/loc/cha
-                                        continue
-                                    # Get max amplitude
-                                    amplitude = max(abs(signal_waveform[0].data)) - offset
-                                    # Check SNR
-                                    if amplitude / noise < 3:
-                                        continue
-                                    # Convert amplitude to nm/s
-                                    amplitude *= 1E9
-                                    # From SC3: mb calculation (modify amplitude to um, subtract 0.14 from result)
-                                    if focal_depth < 100:
-                                        k = int(round(focal_depth / 25 + 2))
-                                        s1 = 0.04 * ((focal_depth - 25) * (k - 2))
-                                    else:
-                                        k = int(round(min(focal_depth / 50 + 4, 17)))
-                                        s1 = 0.02 * ((focal_depth - 50) * (k - 4))
-                                    j = int(round(max(min(delta, 108), 2)))
-                                    s2 = delta - j
-                                    q1 = qmb[k - 2][j - 2] + s1 * (qmb[k - 1][j - 2] - qmb[k - 2][j - 2])
-                                    Q = q1 + s2 * \
-                                        ((qmb[k - 2][j - 1] + s1 * (qmb[k - 1][j - 1] - qmb[k - 2][j - 1])) - q1)
-                                    mB = math.log(amplitude * 1E-3 / (2 * math.pi), 10) + Q - 0.14
-                                    calculated_station_magnitudes[i].append(mB)
-
-                        # Do magnitude calculations
-                        for i, magnitude_type in enumerate(comparison_magnitudes):
-                            # Skip any cases where there is no calculated value
-                            if len(calculated_station_magnitudes[i]) == 0:
-                                continue
-                            calculated_value = trim_mean(calculated_station_magnitudes[i], 0.25)
-                            if magnitude_type == 'mB':
-                                # Build Mw(mB) data
-                                try:
-                                    idx = comparison_magnitudes.index('Mw(mB)')
-                                except ValueError:
-                                    continue
-                                for station_magnitude in calculated_station_magnitudes[i]:
-                                    # Calculate Mw(mB) as per SC3
-                                    calculated_station_magnitudes[idx].append(1.3 * station_magnitude - 2.18)
-                            # Get magnitude value for event, if it exists
-                            catalogue_value = np.nan
-                            for event_magnitude in event.magnitudes:
-                                if event_magnitude.magnitude_type == magnitude_type:
-                                    catalogue_value = event_magnitude.mag
-                                    # If a catalogue value exists,
-                                    # update the catalogue value to the calculated value
-                                    event_magnitude.resource_id = 'nan'
-                                    event_magnitude.mag = calculated_value
-                                    event_magnitude.method_id = 'scipy trim_mean 0.25'
-                                    event_magnitude.station_count = len(calculated_station_magnitudes[i])
-                                    event_magnitude.creation_info = 'nan'
-                                    event_magnitude.station_magnitude_contributions = \
-                                        len(calculated_station_magnitudes[i])
-                            if np.isnan(catalogue_value):
-                                # If no catalogue value exists,
-                                # create one
-                                newmag = copy.deepcopy(event.magnitudes[0])
-                                newmag.resource_id = 'nan'
-                                newmag.mag = calculated_value
-                                newmag.magnitude_type = comparison_magnitudes[i]
-                                newmag.method_id = 'scipy trim_mean 0.25'
-                                newmag.station_count = len(calculated_station_magnitudes[i])
-                                newmag.creation_info = 'nan'
-                                newmag.station_magnitude_contributions = \
-                                    len(calculated_station_magnitudes[i])
-                                event.magnitudes.append(newmag)
-                            catalogue_magnitudes[i].append(catalogue_value)
-                            calculated_magnitudes[i].append(calculated_value)
-                            if np.isnan(catalogue_value) or np.isnan(calculated_value):
-                                continue
-                            else:
-                                magnitude_differences[i].append(calculated_value - catalogue_value)
-
-                    # Check output
-                    for i in range(len(calculated_magnitudes)):
-                        plt.hist(magnitude_differences[i], bins=10)
-                        plt.show()
-                        plt.scatter(catalogue_magnitudes[i], calculated_magnitudes[i])
-                        plt.show()
-
-                # Append new magnitude data to files
-                save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
+                    magnitude_calculation(catalog, catalog_name, comparison_magnitudes, service)
+                else:
+                    # Otherwise, append new magnitude data to files
+                    save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
 
     os.remove('catalog_data.txt')
+
+
+def magnitude_calculation(catalog, catalog_name, comparison_magnitudes, service):
+
+    events = catalog.events
+
+    comparison_magnitudes.sort(reverse=True)  # Ensure mB comes before Mw(mB) in loops
+    calculated_magnitudes = [[] for m in range(len(comparison_magnitudes))]
+    catalogue_magnitudes = [[] for m in range(len(comparison_magnitudes))]
+    station_magnitude_differences = [[] for m in range(len(comparison_magnitudes))]
+    station_amplitude_differences = [[] for m in range(len(comparison_magnitudes))]
+    magnitude_differences = [[] for m in range(len(comparison_magnitudes))]
+    for event in events:
+        # Create theoretical S wave arrivals
+        hypocentre = [event.origins[0].latitude,
+                      event.origins[0].longitude,
+                      event.origins[0].depth]
+        origin_time = event.origins[0].time
+        picks = event.picks
+
+        calculated_stations = [[] for m in range(len(comparison_magnitudes))]
+        calculated_station_magnitudes = [[] for m in range(len(comparison_magnitudes))]
+        calculated_station_amplitudes = [[] for m in range(len(comparison_magnitudes))]
+        magnitude_stations = [[] for m in range(len(comparison_magnitudes))]
+        station_magnitudes = [[] for m in range(len(comparison_magnitudes))]
+        amplitude_stations = [[] for m in range(len(comparison_magnitudes))]
+        station_amplitudes = [[] for m in range(len(comparison_magnitudes))]
+        for pick in picks:
+            if pick.phase_hint[:1] == 'P':
+                p_tt = pick.time
+            else:
+                continue
+            station = pick.waveform_id.station_code
+            location = pick.waveform_id.location_code
+            channel = pick.waveform_id.channel_code
+            if channel != 'HHZ':
+                #  Only allow BB vertical
+                continue
+            try:
+                station_location = FDSN_station_query(station, service)
+            except:
+                # Fails if metadata doesn't exist for station
+                continue
+            # Calculate epicentral distance in degrees
+            delta = math.degrees(2 * (math.asin(((math.sin(1 / 2 * math.radians(abs(hypocentre[0] -
+                                                                                    station_location[
+                                                                                        0])))) ** 2 +
+                                                 math.cos(math.radians(hypocentre[0])) *
+                                                 math.cos(math.radians(station_location[0])) *
+                                                 (math.sin(1 / 2 * math.radians(abs(hypocentre[1] -
+                                                                                    station_location[
+                                                                                        1])))) ** 2) **
+                                                (1 / 2))))
+            focal_depth = hypocentre[2] / 1000
+
+            # Gather station magnitudes for magnitude calculation
+            for i, magnitude_type in enumerate(comparison_magnitudes):
+                if magnitude_type == 'MLv' and delta <= 8:
+                    # Convert delta to km distance
+                    distance = delta * 111.2
+                    # Set window
+                    st = p_tt
+                    et = st + max(delta / 3 + 30, 150)  # As in SC3
+                    try:
+                        snr_waveform = query_fdsn(service, station, location, channel, st - 35, et)
+                        waveform = snr_waveform.copy()
+                        snr_waveform.detrend('linear')
+                        snr_waveform.remove_response()
+                    except:
+                        # If there is no data, or no response, skip the station
+                        continue
+                    noise_waveform = snr_waveform.copy().trim(st - 35, st - 5)
+                    signal_waveform = snr_waveform.copy().trim(st - 5, et)
+                    try:
+                        offset = np.median(noise_waveform[0].data)
+                        noise_waveform -= offset
+                        rms = 0
+                        for j in range(len(noise_waveform[0].data)):
+                            rms += (noise_waveform[0].data[j]) ** 2
+                        rms /= len(noise_waveform[0].data)
+                        noise = 2 * math.sqrt(rms)
+                        amplitude = max(abs(signal_waveform[0].data))
+                        if amplitude / noise < 3:
+                            continue
+                    except:
+                        # Will fail if data doesn't exist for the given site/loc/cha
+                        continue
+                    # Use EQCorrscan to do Wood-Anderson simulation and amplitude picking
+                    client = Client(service)
+                    inventory = client.get_stations(network='NZ', station=station,
+                                                    starttime=st, endtime=et, level='response')
+                    tr = eqcorrscan.utils.mag_calc._sim_WA(waveform.trim(st - 5, et)[0],
+                                                           inventory,
+                                                           water_level=0, velocity=False)
+                    if not tr:
+                        continue
+                    # Get max amplitude
+                    offset = np.median(tr.data)
+                    amplitude = 2 * max(abs(tr.data)) - offset
+                    # amplitude, period, delay, peak, trough =\
+                    #     eqcorrscan.utils.mag_calc._max_p2t(tr.data, tr.stats.delta,
+                    #                                        return_peak_trough=True)
+                    # Convert amplitude to mm
+                    amplitude *= 1E3
+                    amplitude *= 2  # Scale by 2 to account for vertical component picking (as in SC3)
+                    calculated_station_amplitudes[i].append(amplitude)
+                    ML_distances = [0, 60, 400, 1000]
+                    ML_A0 = [-1.3, -2.8, -4.5, -5.85]
+                    for n in range(1, len(ML_distances)):
+                        if ML_distances[n - 1] <= distance < ML_distances[n]:
+                            A0 = ((distance - ML_distances[n - 1]) /
+                                  (ML_distances[n] - ML_distances[n - 1])) * \
+                                 (ML_A0[n] - ML_A0[n - 1]) + ML_A0[n - 1]
+                    MLv = math.log(amplitude, 10) - A0
+                    calculated_station_magnitudes[i].append(MLv)
+                    calculated_stations[i].append(station)
+
+                if magnitude_type == 'mB' and 5 <= delta <= 105 and 0 < focal_depth < 700:
+                    focal_depth += 1  # As in SC3
+                    # Set window
+                    st = p_tt
+                    et = st + 60  # As in SC3
+                    # Calculate noise
+                    try:
+                        waveform = query_fdsn(service, station, location, channel, st - 35, et)
+                        waveform.detrend('linear')
+                        waveform.remove_response()
+                    except:
+                        # If there is no data, or no response, skip the station
+                        continue
+                    noise_waveform = waveform.copy().trim(st - 35, st - 5)
+                    signal_waveform = waveform.copy().trim(st - 5, et)
+                    try:
+                        offset = np.median(noise_waveform[0].data)
+                        noise_waveform -= offset
+                        rms = 0
+                        for j in range(len(noise_waveform[0].data)):
+                            rms += (noise_waveform[0].data[j]) ** 2
+                        rms /= len(noise_waveform[0].data)
+                        noise = 2 * math.sqrt(rms)
+                    except:
+                        # Will fail if data doesn't exist for the given site/loc/cha
+                        continue
+                    # Get max amplitude
+                    amplitude = max(abs(signal_waveform[0].data)) - offset
+                    # Check SNR
+                    if amplitude / noise < 3:
+                        continue
+                    # Convert amplitude to nm/s
+                    amplitude *= 1E9
+                    calculated_station_amplitudes[i].append(amplitude)
+                    # From SC3: mb calculation (modify amplitude to um, subtract 0.14 from result)
+                    if focal_depth < 100:
+                        k = int(round(focal_depth / 25 + 2))
+                        s1 = 0.04 * ((focal_depth - 25) * (k - 2))
+                    else:
+                        k = int(round(min(focal_depth / 50 + 4, 17)))
+                        s1 = 0.02 * ((focal_depth - 50) * (k - 4))
+                    j = int(round(max(min(delta, 108), 2)))
+                    s2 = delta - j
+                    q1 = qmb[k - 2][j - 2] + s1 * (qmb[k - 1][j - 2] - qmb[k - 2][j - 2])
+                    Q = q1 + s2 * \
+                        ((qmb[k - 2][j - 1] + s1 * (qmb[k - 1][j - 1] - qmb[k - 2][j - 1])) - q1)
+                    mB = math.log(amplitude * 1E-3 / (2 * math.pi), 10) + Q - 0.14
+                    calculated_station_magnitudes[i].append(mB)
+                    calculated_stations[i].append(station)
+
+        # Do magnitude calculations
+        for i, magnitude_type in enumerate(comparison_magnitudes):
+            # Skip any cases where there is no calculated value
+            if len(calculated_station_magnitudes[i]) == 0:
+                continue
+            calculated_value = trim_mean(calculated_station_magnitudes[i], 0.25)
+            if magnitude_type == 'mB':
+                # Build Mw(mB) data
+                try:
+                    idx = comparison_magnitudes.index('Mw(mB)')
+                except ValueError:
+                    continue
+                for station_magnitude in calculated_station_magnitudes[i]:
+                    # Calculate Mw(mB) as per SC3
+                    calculated_station_magnitudes[idx].append(1.3 * station_magnitude - 2.18)
+                    calculated_stations[idx].append(station)
+            # Get magnitude value for event, if it exists
+            catalogue_value = np.nan
+
+            # Gather station magnitude/amplitude data for comparison
+            for station_magnitude in event.station_magnitudes:
+                if station_magnitude.station_magnitude_type == comparison_magnitudes[i]:
+                    magnitude_station = station_magnitude.waveform_id['station_code']
+                    magnitude_stations[i].append(magnitude_station)
+                    station_magnitudes[i].append(station_magnitude.mag)
+            for station_amplitude in event.amplitudes:
+                if station_amplitude.type == comparison_magnitudes[i]:
+                    amplitude_station = station_amplitude.waveform_id['station_code']
+                    amplitude_stations[i].append(amplitude_station)
+                    station_amplitudes[i].append(station_amplitude.generic_amplitude)
+
+            for event_magnitude in event.magnitudes:
+                if event_magnitude.magnitude_type == magnitude_type:
+                    catalogue_value = event_magnitude.mag
+                    # If a catalogue value exists,
+                    # update the catalogue value to the calculated value
+                    event_magnitude.resource_id = 'nan'
+                    event_magnitude.mag = calculated_value
+                    event_magnitude.method_id = 'scipy trim_mean 0.25'
+                    event_magnitude.station_count = len(calculated_station_magnitudes[i])
+                    event_magnitude.station_magnitude_contributions = \
+                        len(calculated_station_magnitudes[i])
+            if np.isnan(catalogue_value):
+                # If no catalogue value exists,
+                # create one
+                newmag = copy.deepcopy(event.magnitudes[0])
+                newmag.resource_id = 'nan'
+                newmag.mag = calculated_value
+                newmag.magnitude_type = comparison_magnitudes[i]
+                newmag.method_id = 'scipy trim_mean 0.25'
+                newmag.station_count = len(calculated_station_magnitudes[i])
+                newmag.station_magnitude_contributions = \
+                    len(calculated_station_magnitudes[i])
+                event.magnitudes.append(newmag)
+            catalogue_magnitudes[i].append(catalogue_value)
+            calculated_magnitudes[i].append(calculated_value)
+            if np.isnan(catalogue_value) or np.isnan(calculated_value):
+                continue
+            else:
+                magnitude_differences[i].append(calculated_value - catalogue_value)
+
+        for i, magnitude_type in enumerate(comparison_magnitudes):
+            for j in range(len(calculated_stations[i])):
+                for k in range(len(magnitude_stations[i])):
+                    if calculated_stations[i][j] == magnitude_stations[i][k]:
+                        station_magnitude_differences[i].append(calculated_station_magnitudes[i][j] -
+                                                                station_magnitudes[i][k])
+                for k in range(len(amplitude_stations[i])):
+                    if calculated_stations[i][j] == amplitude_stations[i][k]:
+                        station_amplitude_differences[i].append(calculated_station_amplitudes[i][j] -
+                                                                station_amplitudes[i][k])
+
+    # Check output
+    for i in range(len(comparison_magnitudes)):
+        plt.hist(magnitude_differences[i], bins=10)
+        plt.title('Magnitude Differences for Magnitude Type ' + comparison_magnitudes[i])
+        plt.savefig(comparison_magnitudes[i] + '_magnitude_catalog_comparison.png', dpi=300)
+        plt.clf()
+        # plt.show()
+        plt.hist(station_magnitude_differences[i], bins=10)
+        plt.title('Station Magnitude Differences for Magnitude Type ' + comparison_magnitudes[i])
+        plt.savefig(comparison_magnitudes[i] + '_station_magnitude_catalog_comparison.png', dpi=300)
+        plt.clf()
+        # plt.show()
+        plt.hist(station_amplitude_differences[i], bins=10)
+        plt.title('Station Amplitude Differences for Magnitude Type ' + comparison_magnitudes[i])
+        plt.savefig(comparison_magnitudes[i] + '_station_amplitude_catalog_comparison.png', dpi=300)
+        plt.clf()
+        # plt.show()
+
+    # Append new magnitude data to files
+
+    save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes)
 
 
 def curl(curlstr):
@@ -584,7 +624,7 @@ def save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes):
     """
 
     print('\nBuilding magnitude timeseries...')
-    datalist = [[[] for i in range(len(comparison_magnitudes))] for k in range(8)]
+    datalist = [[[] for i in range(len(comparison_magnitudes))] for k in range(9)]
     for i in range(len(comparison_magnitudes)):
         for event in catalog:
             for magnitude in event.magnitudes:
@@ -600,6 +640,11 @@ def save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes):
                         datalist[7][i].append(event.event_descriptions[0].text)
                     except:
                         datalist[7][i].append('nan')
+                    try:
+                        # In the case of recalculated magnitudes, the catalog creation time is used
+                        datalist[8][i].append(event.magnitudes[0].creation_info['creation_time'] - event.origins[0].time)
+                    except TypeError:
+                        datalist[8][i].append('nan')
                     break  # Do not duplicate records. Assume the first magnitude of the type desired is accurate.
 
         if len(datalist[0][i]) == 0:
@@ -614,7 +659,8 @@ def save_magnitude_timeseries(catalog, catalog_name, comparison_magnitudes):
                     outfile.write(
                         str(datalist[0][i][n]) + ',' + str(datalist[1][i][n]) + ',' + datalist[2][i][n]
                         + ',' + str(datalist[3][i][n]) + ',' + str(datalist[4][i][n]) + ',' + str(datalist[5][i][n])
-                        + ',' + str(datalist[6][i][n]) + ',' + str(datalist[7][i][n]) + '\n')
+                        + ',' + str(datalist[6][i][n]) + ',' + str(datalist[7][i][n]) + ',' + str(datalist[8][i][n]) +
+                        '\n')
 
 
 def GeoNet_Mw(minmagnitude, starttime, endtime):
@@ -644,11 +690,11 @@ def GeoNet_Mw(minmagnitude, starttime, endtime):
                 continue
             else:
                 time = rowsplit[1]
-                
+
                 if ((datetime.datetime.strptime(time, '%Y%m%d%H%M%S') >= datetime.datetime.strptime(starttime,
                                                                                                     '%Y-%m-%dT%H:%M:%SZ'))
                         and (float(rowsplit[11]) >= minmagnitude)):
-    
+
                     try:
                         URL = "https://service.geonet.org.nz/fdsnws/event/1/query?eventid=" + rowsplit[0]
                         event = quakeml_reader.loads(curl(URL))[0]
@@ -735,7 +781,8 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
     """
 
     # Build column types for output csv (columns)
-    columns = ['eventID', 'matchID', 'RMS_error', 'latitude', 'longitude', 'depth', 'description']
+    columns = ['eventID', 'matchID', 'RMS_error', 'latitude', 'longitude', 'depth', 'description',
+               'magnitude_calculation_time']
     magnitudes_columns = []
     for magnitude_type in timeseries_types:
         magnitudes_columns.append(magnitude_type.split('_')[-1])
@@ -748,16 +795,22 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
     for n in range(len(magnitude_timeseries[0])):
         for k in range(len(magnitude_timeseries[0][n])):
             # Only populate the event list with the non-reference catalog
-            if timeseries_types[n].split('_')[0] in catalog_names[0]:
-                # Extract the eventID if it is in a complicated string
-                if 'id=' in magnitude_timeseries[0][n][k]:
-                    eventid = magnitude_timeseries[0][n][k].split('id=')[1]
-                    if '&format=quakeml' in magnitude_timeseries[0][n][k]:
-                        eventid = eventid.split('&format=quakeml')[0]
-                    magnitude_timeseries[0][n][k] = eventid
-                else:
-                    magnitude_timeseries[0][n][k] = magnitude_timeseries[0][n][k].split('/')[-1]
-                event_list.append(magnitude_timeseries[0][n][k])
+            # print(magnitude_timeseries[0])
+            # print(timeseries_types, n, catalog_names[0])
+            try:
+                if timeseries_types[n].split('_')[0] in catalog_names[0]:
+                    # Extract the eventID if it is in a complicated string
+                    if 'id=' in magnitude_timeseries[0][n][k]:
+                        eventid = magnitude_timeseries[0][n][k].split('id=')[1]
+                        if '&format=quakeml' in magnitude_timeseries[0][n][k]:
+                            eventid = eventid.split('&format=quakeml')[0]
+                        magnitude_timeseries[0][n][k] = eventid
+                    else:
+                        magnitude_timeseries[0][n][k] = magnitude_timeseries[0][n][k].split('/')[-1]
+                    event_list.append(magnitude_timeseries[0][n][k])
+            except IndexError:
+                # Magnitude timeseries is empty
+                continue
     event_list = list(set(event_list))
 
     # Pre-populated eventID, location, and RMS error in datalist prior to matching (from reference catalog data)
@@ -938,7 +991,11 @@ def match_magnitudes(magnitude_timeseries, timeseries_types, catalog_names, comp
                                                                                                        grid_points,
                                                                                                        grid_header,
                                                                                                        test_origins)
-                            rms_error = rms_errors[0]
+                            try:
+                                rms_error = rms_errors[0]
+                            except IndexError:
+                                # There was some issue. Ignore the event.
+                                continue
                             print('For match_idx ' + str(match_idx) + ' rms error is ' + str(rms_error))
                             all_rms_errors.append(rms_error)
                             all_idx.append(match_idx)
@@ -1166,14 +1223,14 @@ def do_plotting(datalist, m, n, data_types, description=None, regression_pairs=N
 
 # Set data gathering parameters
 
-minmagnitude = 7  # minimum event magnitude to get from catalog
+minmagnitude = 5  # minimum event magnitude to get from catalog
 minlatitude, maxlatitude = -90, 90  # minimum and maximum latitude for event search window
 minlongitude, maxlongitude = 0, -0.001  # western and eastern longitude for event search window
-starttime = '2012-01-01T00:00:00Z'  # event query starttime
-endtime = '2021-01-01T00:00:00Z' #'2020-03-01T00:00:00'  # event query endtime, 'now' will set it to the current time
+starttime = '2020-03-01T00:00:00Z'  # event query starttime
+endtime = 'now'  # event query endtime, 'now' will set it to the current time
 
 if endtime == 'now':
-    endtime = str(datetime.datetime.now().isoformat())[:19]
+    endtime = str(datetime.datetime.now().isoformat())[:19] + 'Z'
 
 # Define catalogs and their associated FDSN webservice event URL. If a catalog is 'ISC_catalog' then the ISC catalog
 # query will be used instead of the FDSN catalog query.
@@ -1194,10 +1251,7 @@ catalogs = [[] for i in range(len(catalog_names))]
 # If you want to compare magnitudes across a single catalog,
 # you will need to repeat its details as both the comparison and reference catalogs.
 
-# comparison_magnitudes = [['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw'], ['mww']] #['M', 'ML', 'MLv', 'mB', 'Mw(mB)', 'Mw']]
-# comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)'], ['mww']]
-comparison_magnitudes = [['MLv'], ['mww']]
-# comparison_magnitudes = [['mww']]
+comparison_magnitudes = [['MLv', 'mB', 'Mw(mB)', 'M'], ['mww']]
 
 # Set which magnitude type pairs to do orthogonal regression for
 # regression_pairs = [['mB', 'unified_Mw'], ['MLv', 'unified_Mw']]
@@ -1228,7 +1282,8 @@ if build_magnitude_timeseries:
     for i in range(len(catalog_names)):
         for j in range(len(comparison_magnitudes[i])):
             with open(catalog_names[i] + '_' + comparison_magnitudes[i][j] + '_timeseries.csv', 'w') as outfile:
-                outfile.write('eventID,origin_time,magnitude_type,magnitude,latitude,longitude,depth,description\n')
+                outfile.write('eventID,origin_time,magnitude_type,magnitude,latitude,longitude,depth,description,'
+                              'magnitude_calculation_time\n')
 
     print('\nSearching earthquake catalogs for events above magnitude ' + str(minmagnitude) +
           ' between ' + str(minlatitude) + ' and ' + str(maxlatitude) + ' degrees latitude and ' +
@@ -1352,7 +1407,7 @@ with open('./magnitude_matches_all.csv', 'r') as openfile:
 print('Saving plots...')
 # Magnitude value plotting
 complete_pairs = []
-for n in range(7, len(data_types)):
+for n in range(8, len(data_types)):
 
     if gb_plotting:
 
@@ -1384,7 +1439,7 @@ for n in range(7, len(data_types)):
     # Ensure reference magnitudes are only ever on the y-axis
     if data_types[n] not in comparison_magnitudes[0]:
         continue
-    for m in range(7, len(data_types)):
+    for m in range(8, len(data_types)):
 
         # Don't repeat plotting
         if n == m or str(m) + ',' + str(n) in complete_pairs:
