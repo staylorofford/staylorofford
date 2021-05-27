@@ -20,23 +20,23 @@ def query_fdsn(station, location, channel, starttime, endtime):
     :param: endtime: UTC end time of desired data (ISO8601 string)
     :return: obspy stream object containing requested data
     """
-    client = Client("https://service.geonet.org.nz")
+    client = Client("https://service-nrt.geonet.org.nz")
     stream = client.get_waveforms(network='NZ',
                                   station=station,
                                   channel=channel,
                                   location=location,
-                                  starttime=starttime,
-                                  endtime=endtime)
+                                  starttime=obspy.UTCDateTime(starttime),
+                                  endtime=obspy.UTCDateTime(endtime))
     return stream
 
 
 # Set parameters for which data to analyse using lists of strings
-stations = ['KHZ', 'WEL', 'GVZ', 'MQZ',  'THZ', 'NNZ', 'INZ']
-locations = ['??']
+stations = ['WEL']
+locations = ['10']
 channels = ['HHZ']
-starttime = '2017-02-01T10:21:30Z'
-endtime = '2017-02-01T10:23:00Z'
-window_length = 91  # Window length to plot in seconds
+starttime = '2021-05-27T02:32:00Z'
+endtime = '2021-05-27T02:33:00Z'
+window_length = 90  # Window length to plot in seconds
 
 # Set how to filter the data, if at all. Use filter_type=None to negate filtering. Filter types are those in obspy.
 filter_type = 'bandpass'
@@ -49,7 +49,7 @@ spectrogram = False
 
 # Set whether to normalise each trace. Use None or False to negate normalisation.
 # Note: if both spectrogram and normalise are true, then time domain waveforms will be plotted over spectrograms.
-normalise = False
+normalise = True
 
 # Reference times to overlay on plots. Use None to negate reference time plotting. Time format is ISO8601.
 reference_times = None
@@ -95,6 +95,26 @@ while current_time_dt <= end_time_dt:
         stream = stream.filter(type=filter_type,
                                freqmin=minimum_frequency,
                                freqmax=maximum_frequency)
+
+    # Calculate and plot STA:LTA
+    from obspy.signal.trigger import classic_sta_lta
+    trace = stream[0]
+    trace.data /= max(abs(trace.data))
+    df = trace.stats.sampling_rate
+    cft = classic_sta_lta(trace.data, int(5 * df), int(30 * df))
+    ax = plt.subplot(2, 1, 1)
+    ax.plot(trace.times(), trace.data, color='k', linewidth=0.5)
+    plt.ylabel('normalised counts', labelpad=0)
+    ax = plt.subplot(2, 1, 2, sharex=ax)
+    ax.plot(trace.times(), cft, color='k', linewidth=1)
+    plt.hlines(3, 0, 90, color='r', linestyle='--', linewidth=1)
+    plt.vlines(44.5, 0, 5, color='r', linestyle='-', linewidth=1)
+    plt.ylim(0, 5)
+    plt.ylabel('STA:LTA ratio', labelpad=15)
+    plt.xlim(20, 80)
+    plt.xlabel('seconds relative to ' + starttime)
+    plt.show()
+    exit()
 
     # Find min/max values of each trace
     min_max_values = [[0] * len(stream),
@@ -176,6 +196,9 @@ while current_time_dt <= end_time_dt:
                             linestyles='dashed',
                             colors='red')
     plt.gcf().autofmt_xdate()
+    if normalise:
+        plt.ylim(-1, 1)
+
     plt.show()
     plt.savefig(str(window_start) + '_' + str(window_end) + '.png',
                 format='png',
